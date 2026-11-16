@@ -1,0 +1,42 @@
+# Squishy Shop
+
+İki ayrı hesapla ortak stok, satış ve kasa takibi. Next.js uygulaması Vercel’de, ortak veritabanı Supabase’de çalışır.
+
+## Kurulum ve yayın
+
+1. [Supabase SQL Editor](https://supabase.com/dashboard/projects) üzerinden `supabase/migrations/20261116225700_squishy_shop.sql` dosyasını bir kez çalıştırın. Geçiş bu projeye zaten uygulandıysa adımı atlayın. Alternatif olarak migration’ı bağlı Supabase projesine CLI ile uygulayın.
+2. Kaynak dosyaları özel Git deponuza ekleyin. Vercel’de projeyi Next.js olarak içe aktarın ve Node.js 22 veya üstünü seçin.
+3. **Settings → Environment Variables** altında Production için bu değişkenleri ekleyin. Preview ortamında ayrı bir test Supabase projesi kullanın.
+
+| Değişken | Değer |
+| --- | --- |
+| `SUPABASE_URL` | Supabase proje adresi, örneğin `https://proje-ref.supabase.co` |
+| `SUPABASE_SECRET_KEY` | Supabase Dashboard → Settings → API Keys altındaki sunucu anahtarı (`sb_secret_…`). Eski projeler için `SUPABASE_SERVICE_ROLE_KEY` da desteklenir. |
+| `SHOP_SETUP_TOKEN` | İlk kurulum için parola yöneticisiyle oluşturacağınız en az 24 karakterli rastgele anahtar. |
+
+4. Değişkenler eklendikten sonra yeni bir dağıtım oluşturun. **Settings → Domains** altında alan adınızı ekleyin. Vercel’in gösterdiği DNS kayıtlarını alan adı sağlayıcınızda uygulayın.
+5. İlk ekranda **Kurulumu başlat** seçeneğini açın. Kurulum anahtarını ve iki farklı kullanıcı adıyla iki ayrı parolayı girin. Her parola 12–128 karakter olmalı. Her kişi kendi hesabıyla oturum açar. İki hesap aynı stok, satış ve kasa kayıtlarını görür.
+6. İlk kurulum tamamlandığında yeniden kurulum yapılamaz. Kurulum anahtarını Vercel’den kaldırabilirsiniz. Anahtarları kaynak koduna eklemeyin.
+
+## İşlemler
+
+- Ürün kartına fotoğraf, liste fiyatı ve düşük stok eşiği girin. Koli kaydındaki adet × birim maliyet toplamı koli tutarıyla eşleşmelidir. Stok teslim kaydıyla artar, kasa gerçek ödeme günü azalır. Ödeme daha sonra ilgili koliye kaydedilebilir.
+- Satış eklerken Dolap veya Gardrops’u seçin ve ürün başına anlaşılan birim fiyatı girin. Liste fiyatı, indirim ve FIFO maliyeti satış anında sabitlenir. Satılan son ürün için eşzamanlı iki kayıttan yalnızca biri kabul edilir.
+- İptal ayrılan adedi stoğa döndürür. İadede satılabilir adedi her ürün için ayrı girin. Satılabilir sıfır adet stoğu değiştirmez. Diğer platformdaki ilanı manuel kontrol edin.
+- Beklenen tahsilat satış tutarından platform kesintisi düşülerek hesaplanır. Sipariş kârı hesaplanırken satıcıya ait kargo, paketleme ve ürün maliyeti de düşülür. Örneğin 550 TL satış, 40 TL kesinti, 200 TL maliyet ve 10 TL paketleme için beklenen ödeme 510 TL, kâr 300 TL’dir.
+- Kasa hareketi için platform ödemesinin tarihini, gerçek tutarını ve alan hesabı girin. İptal veya iade önceki gerçek tahsilatı silmez. Gerçekleşen ayrı bir iade ödemesini ilgili notla gider olarak kaydedin. İptal ve iadeler aktif satış toplamından çıkar.
+- Paketleme gideri sipariş kârında hesaba katılır. Gerçek bir paketleme ödemesini genel gider olarak kaydetmek kasayı etkiler. Koli ödemeleri kasa hareketidir ve sipariş kârından ayrıca düşülmez.
+- Raporlarda satış, stok hareketi ve gider için başlangıç ve bitiş tarihini seçip Excel uyumlu CSV alın.
+
+## Yerel geliştirme ve kontroller
+
+```sh
+npm ci
+npm run dev
+npm run typecheck
+npm run build
+npm run test:api
+```
+
+Yerel çalıştırma için `.env.example` dosyasını `.env.local` olarak kopyalayıp ayrı bir test Supabase projesiyle doldurun. Uçtan uca test için boş test veritabanında migration’ı çalıştırın ve uygulamayı başlatın. `SHOP_TEST_BASE_URL` ve `SHOP_TEST_SETUP_TOKEN` değerlerini ayarlayıp `npm run test:integration` komutunu çalıştırın. Bu test iki deneme hesabı ve test kayıtları oluşturur. `tests/shop.database.test.sql` PostgreSQL RPC iş akışını tek işlemde dener ve test satırlarını geri alır.
+
