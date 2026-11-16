@@ -30,6 +30,7 @@
 - Ortaklar ekranı dönemin ürün kârlarını, gerçekleşen tahsilatları, ödenen giderleri ve ortaklar arası bakiyeyi gösterir. Siparişin toplam kesintisi, kargosu ve paketlemesi ürünlere satış tutarlarına göre dağıtılır. Tamamı bedelsiz siparişlerde dağıtım adede göre yapılır.
 - Ortaklar arası bakiye, bitiş tarihine kadar gerçekleşen tahsilatları ve ödenen FIFO maliyetlerini ürün oranıyla bölüştürür. Satılan stokun maliyeti ödeyen ortağa yazılır. Stok ödemesi, tahsilatı veya oranı eksik siparişler tamamlanana kadar bekler. İptal ve iadeler bölüşüm dışında tutulur. Kargo ve paketleme gibi fiili harcamalar, kasa giderine ortaklık payı girildiğinde bakiyeye yansır. Yapılan transferi Ortaklar ekranında kaydedin.
 - Paketleme gideri sipariş kârında hesaba katılır. Gerçek bir paketleme ödemesini genel gider olarak kaydetmek kasayı etkiler. Koli ödemeleri kasa hareketidir ve sipariş kârından ayrıca düşülmez.
+- Ayarlar ekranında kutu, ambalaj, sticker ve kart için sipariş başına ortak paketleme varsayılanını belirleyin. Başlangıç tutarı 10 TL’dir. Yeni satışta bu tutar otomatik gelir ve satışa özel düzenlenebilir.
 - Raporlarda satış, stok hareketi ve gider için başlangıç ve bitiş tarihini seçip Excel uyumlu CSV alın.
 
 ## Yerel geliştirme ve kontroller

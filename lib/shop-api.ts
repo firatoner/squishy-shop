@@ -1,7 +1,7 @@
 import { createHash, pbkdf2, randomBytes, timingSafeEqual } from "node:crypto";
 import { promisify } from "node:util";
 
-export type Rpc = <T>(group: "auth" | "write" | "read" | "cash_write" | "partnership_write", data: Record<string, unknown>) => Promise<T>;
+export type Rpc = <T>(group: "auth" | "write" | "read" | "cash_write" | "partnership_write" | "settings_write", data: Record<string, unknown>) => Promise<T>;
 type Environment = { rpc: Rpc; setupToken?: string; secureCookies: boolean };
 type Input = Record<string, unknown>;
 type User = { id: number; name: string; username: string };
@@ -162,6 +162,8 @@ function mutation(action: string, input: Input) {
     }
     case "partner-transfer-delete":
       return { id: id(input.id) };
+    case "settings":
+      return { defaultPacking: money(input.defaultPacking, "Varsayılan paketleme") };
     case "expense":
       return { ...expenseFields(input), date: date(input.date), payerId: id(input.payerId) };
     case "cash-edit":
@@ -367,6 +369,7 @@ export async function handleShopRequest(request: Request, action: string, env: E
       const p_data = mutation(action, await body(request));
       const group = action === "cash-edit" || action === "cash-delete" ? "cash_write"
         : action === "order-share" || action === "partner-transfer" || action === "partner-transfer-delete" ? "partnership_write"
+        : action === "settings" ? "settings_write"
         : "write";
       return json(await env.rpc(group, { p_action: action, p_actor: session.user.id, p_data }));
     }

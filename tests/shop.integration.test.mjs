@@ -68,6 +68,7 @@ test("Two members track inventory, sales, supplier payments, and expenses", asyn
     lines: [{ productId, quantity: 1, unitCost: 20000 }],
   }))).id;
   const state = () => ok(mert("state"));
+  assert.equal((await state()).settings.defaultPacking, 1000);
   const makeOrder = (call, reference) => call("order", {
     platform: "Dolap", date, reference, platformFee: 4000, shipping: 0, packing: 1000,
     lines: [{ productId, quantity: 1, agreedPrice: 55000 }],
@@ -199,6 +200,14 @@ test("Two members track inventory, sales, supplier payments, and expenses", asyn
   assert.equal(transferred.summary.cashBalance, 31000);
   await ok(ayse("partner-transfer-delete", { id: transferId }));
   assert.deepEqual((await state()).partnerTransfers, []);
+  assert.equal((await client()("settings", { defaultPacking: 1275 })).status, 401);
+  assert.equal((await ayse("settings", { defaultPacking: -1 })).status, 400);
+  await ok(ayse("settings", { defaultPacking: 1275 }));
+  const withSettings = await state();
+  assert.equal(withSettings.settings.defaultPacking, 1275);
+  assert.equal(withSettings.orders.find(({ id }) => id === receiptOrderId).packing, 1000);
+  assert.equal(withSettings.summary.cashBalance, 31000);
+  await ok(mert("settings", { defaultPacking: 1000 }));
 
   await ok(mert("logout", {}));
   assert.equal((await ok(mert("session"))).user, null);

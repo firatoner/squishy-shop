@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
-import { Activity, Archive, Boxes, CalendarDays, Check, Download, Heart, House, LogOut, Plus, Receipt, ShoppingBag, Sparkles, Users, Wallet, X } from "lucide-react";
+import { Activity, Archive, Boxes, CalendarDays, Check, Download, Heart, House, LogOut, Plus, Receipt, Settings, ShoppingBag, Sparkles, Users, Wallet, X } from "lucide-react";
 import { calculatePartnership, type PartnerTransfer } from "@/lib/shop-partnership";
 
 type Member = { id: number; username: string; name: string };
@@ -31,9 +31,10 @@ type Audit = { id: number; action: string; entityId: number; actorId: number; cr
 type Shop = {
   users: Member[]; products: Product[]; purchases: Purchase[]; orders: Order[]; expenses: Expense[]; stock: Stock[]; cash: Cash[]; audit: Audit[];
   partnerTransfers: PartnerTransfer[];
+  settings: { defaultPacking: number };
   summary: { month: string; gross: number; collected: number; profit: number; cashBalance: number };
 };
-type PageName = "dashboard" | "products" | "orders" | "stock" | "cash" | "partners" | "reports";
+type PageName = "dashboard" | "products" | "orders" | "stock" | "cash" | "partners" | "reports" | "settings";
 type Editor =
   | { type: "product"; product?: Product }
   | { type: "purchase" | "order" }
@@ -45,6 +46,7 @@ type Editor =
   | { type: "order-share"; order: Order; productId: number; productName: string }
   | { type: "partner-transfer"; senderId?: number; amount?: number }
   | { type: "partner-transfer-delete"; transfer: PartnerTransfer }
+  | { type: "settings"; defaultPacking: number }
   | { type: "order-status"; order: Order; status: "packed" | "cancelled" | "returned" };
 
 const sections = [
@@ -55,6 +57,7 @@ const sections = [
   { id: "cash", label: "Kasa ve Giderler", Icon: Wallet },
   { id: "partners", label: "Ortaklar", Icon: Users },
   { id: "reports", label: "Raporlar", Icon: Download },
+  { id: "settings", label: "Ayarlar", Icon: Settings },
 ] as const;
 const statusLabel: Record<OrderStatus, string> = {
   pending: "Paketlenecek", packed: "Paketlendi", cancelled: "İptal edildi", returned: "İade edildi",
@@ -64,6 +67,7 @@ const stockLabel: Record<string, string> = {
 };
 const expenseCategories = ["Ambalaj", "Kargo", "Malzeme", "Pazarlama", "Diğer"];
 const cashLabels: Record<CashKind, string> = { purchase: "Stok ödemesi", receipt: "Tahsilat", expense: "Gider" };
+const defaultPacking = (shop: Shop) => shop.settings?.defaultPacking ?? 1000;
 const turkishMoney = new Intl.NumberFormat("tr-TR", { style: "currency", currency: "TRY" });
 function money(value: number) { return turkishMoney.format(value / 100); }
 function moneyInput(value: number) { return (value / 100).toFixed(2).replace(".", ","); }
@@ -349,6 +353,16 @@ function PartnersPage({ data, open }: { data: Shop; open: (editor: Editor) => vo
     </div>
   </>;
 }
+function SettingsPage({ shop, open }: { shop: Shop; open: (editor: Editor) => void }) {
+  const amount = defaultPacking(shop);
+  return <>
+    <SectionHeader title="Ayarlar" description="Yeni satışlarda kullanılacak ortak varsayılanları yönet." />
+    <Panel title="Sipariş başına paketleme" meta={<strong>{money(amount)}</strong>}>
+      <p>Kutu, ambalaj, sticker ve kart için ortalama toplam tutar. Her satışta değiştirebilirsin.</p>
+      <div className="actions"><button onClick={() => open({ type: "settings", defaultPacking: amount })}>Düzenle</button></div>
+    </Panel>
+  </>;
+}
 function Reports({ month }: { month: string }) {
   const [from, setFrom] = useState(month + "-01");
   const [to, setTo] = useState(today);
@@ -505,7 +519,7 @@ function LinesForm({ mode, shop, user, busy, save, addProduct }: { mode: "purcha
   const [total, setTotal] = useState("");
   const [fee, setFee] = useState("0");
   const [shipping, setShipping] = useState("0");
-  const [packing, setPacking] = useState("0");
+  const [packing, setPacking] = useState(() => moneyInput(defaultPacking(shop)));
   const [paid, setPaid] = useState(false);
   function updateLine(id: number, change: Partial<DraftLine>) {
     setLines(active => active.map(line => line.id === id ? { ...line, ...change } : line));
@@ -653,6 +667,7 @@ function getTitle(editor: Editor) {
     case "order-share": return "Satışın ortaklık payını gir";
     case "partner-transfer": return "Ortaklar arası transferi kaydet";
     case "partner-transfer-delete": return "Transferi sil";
+    case "settings": return "Varsayılan paketlemeyi düzenle";
     case "order-status": return { packed: "Paketlemeyi tamamla", cancelled: "Siparişi iptal et", returned: "İade kaydet" }[editor.status];
   }
 }
@@ -665,6 +680,13 @@ function EditorBody({ editor, shop, user, busy, save, open }: { editor: Editor; 
       return <LinesForm mode={editor.type} shop={shop} user={user} busy={busy} save={save} addProduct={() => open({ type: "product" })} />;
     case "order-detail":
       return <OrderDetail order={editor.order} users={shop.users} audit={shop.audit} open={open} />;
+    case "settings":
+      return <form className="form" onSubmit={event => save(event, "settings", data => ({
+        defaultPacking: requiredMoney(field(data, "defaultPacking")),
+      }))}>
+        <AmountField label="Sipariş başına paketleme (₺)" name="defaultPacking" value={moneyInput(editor.defaultPacking)} />
+        <SaveButton busy={busy} />
+      </form>;
     case "order-share":
       return <form className="form" onSubmit={event => save(event, "order-share", data => ({
         id: editor.order.id, productId: editor.productId, firstPartnerShare: Number(field(data, "firstPartnerShare")),
@@ -798,6 +820,7 @@ function visiblePage(page: PageName, shop: Shop, open: (editor: Editor) => void)
     case "cash": return <CashPage data={shop} open={open} />;
     case "partners": return <PartnersPage data={shop} open={open} />;
     case "reports": return <Reports month={shop.summary.month} />;
+    case "settings": return <SettingsPage shop={shop} open={open} />;
   }
 }
 export default function Home() {
