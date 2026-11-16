@@ -22,6 +22,8 @@
 
 - Ürün kartına fotoğraf, ayrı Dolap ve Gardrops liste fiyatları ve düşük stok eşiği girin. Koli kaydındaki adet × birim maliyet toplamı koli tutarıyla eşleşmelidir. Stok teslim kaydıyla artar, kasa gerçek ödeme günü azalır. Ödeme daha sonra ilgili koliye kaydedilebilir.
 - Satış eklerken Dolap veya Gardrops’u seçin. Anlaşılan birim fiyat seçilen platformun liste fiyatıyla dolar ve düzenlenebilir. Liste fiyatı, indirim ve FIFO maliyeti satış anında sabitlenir. Satılan son ürün için eşzamanlı iki kayıttan yalnızca biri kabul edilir.
+- Birden çok ürüne tek teklif verildiyse satış toplamını bir kez girin. Tutar seçilen platform fiyatları ve adetlerine göre ürünlere kuruşu kuruşuna dağıtılır. Tüm liste fiyatları sıfırsa dağıtım adede göre yapılır.
+- Kargo ve platform kesintisi sonrası neti doğrudan girebilirsiniz. Paketleme ve stok maliyeti kâr hesabında bu tutardan düşülür. Hesaba geçen gerçek ödeme tahsilat alanına kaydedilir.
 - İptal ayrılan adedi stoğa döndürür. İadede satılabilir adedi her ürün için ayrı girin. Satılabilir sıfır adet stoğu değiştirmez. Diğer platformdaki ilanı manuel kontrol edin.
 - Beklenen tahsilat satış tutarından platform kesintisi düşülerek hesaplanır. Sipariş kârı hesaplanırken satıcıya ait kargo, paketleme ve ürün maliyeti de düşülür. Örneğin 550 TL satış, 40 TL kesinti, 200 TL maliyet ve 10 TL paketleme için beklenen ödeme 510 TL, kâr 300 TL’dir.
 - Kasa hareketi için platform ödemesinin tarihini, gerçek tutarını ve alan hesabı girin. İptal veya iade önceki gerçek tahsilatı silmez. Gerçekleşen ayrı bir iade ödemesini ilgili notla gider olarak kaydedin. İptal ve iadeler aktif satış toplamından çıkar.

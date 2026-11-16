@@ -66,3 +66,10 @@ test("allocates the final cent exactly across products, including zero-gross ord
   assert.equal(result.products.reduce((sum, product) => sum + product.profit, 0), -1);
   for (const product of result.products) assert.equal(product.firstProfit + product.secondProfit, product.profit);
 });
+
+test("uses the order's direct net before packing to calculate product profits", () => {
+  const direct = { ...sale, netAfterShipping: 87500, platformFee: 0, shipping: 0 };
+  const result = calculatePartnership({ ...fixtures, orders: [direct] }, from, through);
+  assert.deepEqual(result.products.map(product => product.profit), [41300, 24200]);
+  assert.equal(result.firstBalance, -51200);
+});

@@ -17,6 +17,7 @@ type OrderStatus = "pending" | "packed" | "cancelled" | "returned";
 type Order = {
   id: number; platform: Platform; reference: string | null; date: string; status: OrderStatus;
   gross: number; discount: number; platformFee: number; shipping: number; packing: number; cost: number;
+  netAfterShipping?: number | null;
   expectedReceipt: number; profit: number; actorId: number; receiptDate: string | null; receiptAmount: number | null;
   recipientId: number | null; returnSellable?: boolean | null; returnLines?: { productId: number; quantity: number }[];
   lines: { productId: number; productName: string; purchaseId: number; quantity: number; listPrice: number; agreedPrice: number;
@@ -71,13 +72,16 @@ const defaultPacking = (shop: Shop) => shop.settings?.defaultPacking ?? 1000;
 const turkishMoney = new Intl.NumberFormat("tr-TR", { style: "currency", currency: "TRY" });
 function money(value: number) { return turkishMoney.format(value / 100); }
 function moneyInput(value: number) { return (value / 100).toFixed(2).replace(".", ","); }
-function toMoney(value: string) {
-  const match = /^(\d+)(?:[.,](\d{1,2}))?$/.exec(value.trim());
+function toMoney(value: string, allowNegative = false) {
+  const text = value.trim();
+  const negative = allowNegative && text.startsWith("-");
+  const match = /^(\d+)(?:[.,](\d{1,2}))?$/.exec(negative ? text.slice(1) : text);
   if (!match) return NaN;
-  return Number(match[1]) * 100 + Number((match[2] ?? "").padEnd(2, "0"));
+  const amount = Number(match[1]) * 100 + Number((match[2] ?? "").padEnd(2, "0"));
+  return negative ? -amount : amount;
 }
-function requiredMoney(value: string) {
-  const amount = toMoney(value);
+function requiredMoney(value: string, allowNegative = false) {
+  const amount = toMoney(value, allowNegative);
   if (!Number.isSafeInteger(amount)) throw new Error("Tutarları 125,50 biçiminde yazın.");
   return amount;
 }
@@ -198,7 +202,7 @@ function Dashboard({ data, open }: { data: Shop; open: (editor: Editor) => void 
       </div>
       <div className="stack">
         <Panel title="Bekleyen tahsilatlar" meta={<span className="pill">{receivables.length} sipariş</span>}>
-          {receivables.length ? <div className="list">{receivables.map(order => <div className="row" key={order.id}><div><h3>{order.platform} · {order.reference || "#" + order.id}</h3><p className="subtle">Beklenen {money(order.expectedReceipt)}</p></div><div className="actions"><button onClick={() => open({ type: "receipt", order })}>Tahsilat gir</button></div></div>)}</div> : <Empty>Bekleyen tahsilat yok.</Empty>}
+          {receivables.length ? <div className="list">{receivables.map(order => <div className="row" key={order.id}><div><h3>{order.platform} · {order.reference || "#" + order.id}</h3><p className="subtle">{order.netAfterShipping == null ? "Beklenen" : "Kargo ve kesinti sonrası net"} {money(order.expectedReceipt)}</p></div><div className="actions"><button onClick={() => open({ type: "receipt", order })}>Tahsilat gir</button></div></div>)}</div> : <Empty>Bekleyen tahsilat yok.</Empty>}
         </Panel>
         <Panel title="Ödenecek stok alımları" meta={<span className="pill">{bills.length} alım</span>}>
           {bills.length ? <div className="list">{bills.map(purchase => <div className="row" key={purchase.id}><div><h3>{purchase.name}</h3><p className="subtle">{money(purchase.total)}</p></div><div className="actions"><button onClick={() => open({ type: "purchase-payment", purchase })}>Ödeme gir</button></div></div>)}</div> : <Empty>Ödeme bekleyen stok alımı yok.</Empty>}
@@ -517,10 +521,14 @@ function LinesForm({ mode, shop, user, busy, save, addProduct }: { mode: "purcha
   const nextLineId = useRef(2);
   const [platform, setPlatform] = useState<Platform>("Dolap");
   const [total, setTotal] = useState("");
+  const [saleTotal, setSaleTotal] = useState("");
+  const [netAfterShipping, setNetAfterShipping] = useState("");
   const [fee, setFee] = useState("0");
   const [shipping, setShipping] = useState("0");
   const [packing, setPacking] = useState(() => moneyInput(defaultPacking(shop)));
   const [paid, setPaid] = useState(false);
+  const usesSaleTotal = !purchase && saleTotal.trim() !== "";
+  const usesNet = netAfterShipping.trim() !== "";
   function updateLine(id: number, change: Partial<DraftLine>) {
     setLines(active => active.map(line => line.id === id ? { ...line, ...change } : line));
   }
@@ -532,9 +540,11 @@ function LinesForm({ mode, shop, user, busy, save, addProduct }: { mode: "purcha
   });
   const sum = rows.reduce((amount, { line, price }) => amount + Number(line.quantity) * (toMoney(price) || 0), 0);
   const listTotal = rows.reduce((amount, { line, listPrice }) => amount + Number(line.quantity) * (listPrice ?? 0), 0);
-  const discount = rows.reduce((amount, { line, listPrice, price }) =>
+  const gross = usesSaleTotal ? toMoney(saleTotal) : sum;
+  const discount = usesSaleTotal ? Math.max(0, listTotal - gross) : rows.reduce((amount, { line, listPrice, price }) =>
     amount + Number(line.quantity) * Math.max(0, (listPrice ?? 0) - (toMoney(price) || 0)), 0);
-  const receipt = sum - (toMoney(fee) || 0);
+  const net = usesNet ? toMoney(netAfterShipping, true) : gross - toMoney(fee) - toMoney(shipping);
+  const afterPacking = net - toMoney(packing);
   const totalDifference = toMoney(total) - sum;
   if (!products.length) return <div className="stack">
     <Empty>{purchase ? "Stok alımı kaydetmek için önce bir ürün ekle." : "Satış eklemek için stokta en az bir ürün olmalı."}</Empty>
@@ -542,7 +552,8 @@ function LinesForm({ mode, shop, user, busy, save, addProduct }: { mode: "purcha
   </div>;
   return <form className="form" onSubmit={event => save(event, mode, data => {
     const date = field(data, "date");
-    const baseLines = rows.map(({ line, price }) => ({ productId: Number(line.productId), quantity: Number(line.quantity), price: requiredMoney(price) }));
+    const baseLines = rows.map(({ line, price }) => ({ productId: Number(line.productId), quantity: Number(line.quantity),
+      price: usesSaleTotal ? undefined : requiredMoney(price) }));
     if (purchase) {
       const amount = requiredMoney(total);
       if (amount !== sum) throw new Error("Kutu toplamı, ürün satırlarının toplamıyla eşleşmeli.");
@@ -555,7 +566,10 @@ function LinesForm({ mode, shop, user, busy, save, addProduct }: { mode: "purcha
     return {
       platform, date, reference: field(data, "reference").trim() || undefined,
       lines: baseLines.map(({ price, ...line }) => ({ ...line, agreedPrice: price })),
-      platformFee: requiredMoney(fee), shipping: requiredMoney(shipping), packing: requiredMoney(packing),
+      saleTotal: usesSaleTotal ? requiredMoney(saleTotal) : undefined,
+      netAfterShipping: usesNet ? requiredMoney(netAfterShipping, true) : undefined,
+      platformFee: usesNet ? undefined : requiredMoney(fee), shipping: usesNet ? undefined : requiredMoney(shipping),
+      packing: requiredMoney(packing),
     };
   })}>
     <div className="form-row">
@@ -572,7 +586,7 @@ function LinesForm({ mode, shop, user, busy, save, addProduct }: { mode: "purcha
         </select></label>
         <div className="form-row">
           <label>Adet<input type="number" min={1} max={purchase ? undefined : product?.stock} inputMode="numeric" step={1} value={line.quantity} onChange={event => updateLine(line.id, { quantity: event.target.value })} required /></label>
-          <label>{purchase ? "Birim maliyet (₺)" : "Anlaşılan birim fiyat (₺)"}<input inputMode="decimal" value={price} onChange={event => updateLine(line.id, { priceOverride: event.target.value })} maxLength={13} placeholder="0,00" required /></label>
+          {!usesSaleTotal && <label>{purchase ? "Birim maliyet (₺)" : "Anlaşılan birim fiyat (₺)"}<input inputMode="decimal" value={price} onChange={event => updateLine(line.id, { priceOverride: event.target.value })} maxLength={13} placeholder="0,00" required /></label>}
         </div>
         {!purchase && listPrice !== undefined && <p className="subtle">{platform} liste fiyatı {money(listPrice)}</p>}
         {lines.length > 1 && <div className="actions"><button className="danger" type="button" onClick={() => setLines(active => active.filter(other => other.id !== line.id))}>Satırı kaldır</button></div>}
@@ -591,16 +605,25 @@ function LinesForm({ mode, shop, user, busy, save, addProduct }: { mode: "purcha
       {paid && <div className="form-row"><DateField label="Ödeme tarihi" name="paymentDate" /><MemberField label="Ödeyen" users={shop.users} defaultId={user.id} /></div>}
     </> : <>
       <div className="form-row">
-        <label>Platform kesintisi (₺)<input inputMode="decimal" maxLength={13} value={fee} onChange={event => setFee(event.target.value)} required /></label>
-        <label>Ödediğimiz kargo (₺)<input inputMode="decimal" maxLength={13} value={shipping} onChange={event => setShipping(event.target.value)} required /></label>
+        <label>Toplam satış tutarı (₺)<input inputMode="decimal" maxLength={13} value={saleTotal} onChange={event => setSaleTotal(event.target.value)} placeholder={moneyInput(sum)} /></label>
+        <label>Kargo ve kesinti sonrası net (₺)<input inputMode="decimal" maxLength={13} value={netAfterShipping} onChange={event => setNetAfterShipping(event.target.value)} placeholder="0,00" /></label>
       </div>
-      <p className="subtle">Ödediğimiz kargo ve paketleme maliyeti sipariş kârından düşülür.</p>
+      <p className="subtle">Teklifin toplamını yazabilir veya ürün fiyatlarıyla devam etmek için alanı boş bırakabilirsin. Net tutarı paketleme düşmeden gir.</p>
+      {!usesNet && <details className="purchase-details">
+        <summary>Platform kesintisini ve kargoyu ayrı gir</summary>
+        <div className="form-row">
+          <label>Platform kesintisi (₺)<input inputMode="decimal" maxLength={13} value={fee} onChange={event => setFee(event.target.value)} /></label>
+          <label>Ödediğimiz kargo (₺)<input inputMode="decimal" maxLength={13} value={shipping} onChange={event => setShipping(event.target.value)} /></label>
+        </div>
+      </details>}
       <label>Paketleme maliyeti (₺)<input inputMode="decimal" maxLength={13} value={packing} onChange={event => setPacking(event.target.value)} required /></label>
       <div className="form-totals" aria-live="polite">
         <div className="inline"><span>Liste toplamı</span><strong>{money(listTotal)}</strong></div>
-        <div className="inline"><span>Brüt satış</span><strong>{money(sum)}</strong></div>
-        <div className="inline"><span>İndirim</span><strong>{money(discount)}</strong></div>
-        <div className="inline"><span>Beklenen tahsilat</span><strong>{money(receipt)}</strong></div>
+        <div className="inline"><span>Brüt satış</span><strong>{Number.isFinite(gross) ? money(gross) : "—"}</strong></div>
+        <div className="inline"><span>İndirim</span><strong>{Number.isFinite(discount) ? money(discount) : "—"}</strong></div>
+        {!usesNet && <div className="inline"><span>Platformdan beklenen ödeme</span><strong>{Number.isFinite(gross - toMoney(fee)) ? money(gross - toMoney(fee)) : "—"}</strong></div>}
+        <div className="inline"><span>Kargo ve kesinti sonrası net</span><strong>{Number.isFinite(net) ? money(net) : "—"}</strong></div>
+        <div className="inline"><span>Paketleme sonrası kalan</span><strong>{Number.isFinite(afterPacking) ? money(afterPacking) : "—"}</strong></div>
       </div>
     </>}
     <SaveButton busy={busy}>{purchase ? "Stok alımını kaydet" : "Satışı kaydet"}</SaveButton>
@@ -623,6 +646,16 @@ function OrderDetail({ order, users, audit, open }: { order: Order; users: Membe
   };
   const history = audit.filter(item => item.entityId === order.id && Object.hasOwn(actions, item.action));
   const shares = new Map(order.lines.map(line => [line.productId, line]));
+  const net = order.netAfterShipping ?? (order.gross - order.platformFee - order.shipping);
+  const deductions: [string, number][] = order.netAfterShipping == null
+    ? [["Platform kesintisi", order.platformFee], ["Ödediğimiz kargo", order.shipping], ["Platformdan beklenen ödeme", order.expectedReceipt]]
+    : [["Kargo ve platform kesintisi toplamı", order.gross - net]];
+  const amounts: [string, number][] = [
+    ["Brüt satış", order.gross], ["İndirim", order.discount],
+    ...deductions,
+    ["Kargo ve kesinti sonrası net", net], ["Paketleme", order.packing], ["Paketleme sonrası kalan", net - order.packing],
+    ["Toplam stok maliyeti", order.cost], ["Sipariş kârı", order.profit],
+  ];
   return <div className="stack">
     <div className="inline"><p>{order.platform} · {order.reference || "#" + order.id} · {dateLabel(order.date)}</p><span className="pill">{statusLabel[order.status]}</span></div>
     <Table headers={["Ürün", "Adet", "Liste fiyatı", "Satış fiyatı", "Stok maliyeti"]} rows={order.lines.map(line => [line.productName, line.quantity, money(line.listPrice), money(line.agreedPrice), money(line.cost ?? line.unitCost * line.quantity)])} />
@@ -633,7 +666,7 @@ function OrderDetail({ order, users, audit, open }: { order: Order; users: Membe
         : shareLabel(users, line.firstPartnerShare),
     ])} />
     <div className="form-totals">
-      {[["Brüt satış", order.gross], ["İndirim", order.discount], ["Platform kesintisi", order.platformFee], ["Ödediğimiz kargo", order.shipping], ["Paketleme", order.packing], ["Toplam stok maliyeti", order.cost], ["Beklenen tahsilat", order.expectedReceipt], ["Sipariş kârı", order.profit]].map(([label, value]) => <div className="inline" key={label}><span>{label}</span><strong>{money(Number(value))}</strong></div>)}
+      {amounts.map(([label, value]) => <div className="inline" key={label}><span>{label}</span><strong>{money(value)}</strong></div>)}
     </div>
     <p className="subtle">Ekleyen {getMember(users, order.actorId)}</p>
     {!!history.length && <div>
@@ -751,8 +784,8 @@ function EditorBody({ editor, shop, user, busy, save, open }: { editor: Editor; 
       return <form className="form" onSubmit={event => save(event, "receipt", data => ({
         id: editor.order.id, date: field(data, "date"), amount: requiredMoney(field(data, "amount")), recipientId: Number(field(data, "recipientId")),
       }))}>
-        <div className="form-totals inline"><span>Beklenen tahsilat</span><strong>{money(editor.order.expectedReceipt)}</strong></div>
-        <AmountField label="Hesaba geçen tutar (₺)" name="amount" value={moneyInput(editor.order.expectedReceipt)} />
+        <div className="form-totals inline"><span>{editor.order.netAfterShipping == null ? "Beklenen tahsilat" : "Kargo ve kesinti sonrası net"}</span><strong>{money(editor.order.expectedReceipt)}</strong></div>
+        <AmountField label="Hesaba geçen tutar (₺)" name="amount" value={editor.order.expectedReceipt > 0 ? moneyInput(editor.order.expectedReceipt) : undefined} />
         <DateField label="Hesaba geçiş tarihi" /><MemberField label="Paranın geçtiği hesap" users={shop.users} defaultId={user.id} name="recipientId" />
         <SaveButton busy={busy} />
       </form>;

@@ -209,6 +209,36 @@ test("Two members track inventory, sales, supplier payments, and expenses", asyn
   assert.equal(withSettings.summary.cashBalance, 31000);
   await ok(mert("settings", { defaultPacking: 1000 }));
 
+  // The bundle uses the selected channel prices and retains the remainder cent across FIFO lots.
+  const [bundleA, bundleB] = await Promise.all([2000, 4000].map(async (gardropsListPrice) =>
+    (await ok(mert("product", { name: "Bundle " + gardropsListPrice, dolapListPrice: 0, gardropsListPrice, lowThreshold: 0 }))).id));
+  await ok(mert("purchase", { name: "First lot", date, total: 800, lines: [{ productId: bundleA, quantity: 2, unitCost: 400 }] }));
+  await ok(mert("purchase", { name: "Second lot", date, total: 1100, lines: [
+    { productId: bundleA, quantity: 1, unitCost: 400 }, { productId: bundleB, quantity: 1, unitCost: 700 },
+  ] }));
+  const bundle = {
+    date, reference: "BUNDLE-1", platform: "Gardrops", saleTotal: 8002, netAfterShipping: 6900, packing: 925,
+    lines: [{ productId: bundleA, quantity: 3 }, { productId: bundleB, quantity: 1 }],
+  };
+  assert.equal((await ayse("order", { ...bundle, netAfterShipping: 8003 })).status, 400);
+  const bundleId = (await ok(ayse("order", bundle))).id;
+  const bundled = (await state()).orders.find(({ id }) => id === bundleId);
+  assert.deepEqual([bundled.gross, bundled.discount, bundled.netAfterShipping, bundled.packing, bundled.cost, bundled.profit],
+    [8002, 1998, 6900, 925, 1900, 4075]);
+  assert.equal(bundled.lines.filter(line => line.productId === bundleA).reduce((sum, line) => sum + line.agreedPrice * line.quantity, 0), 4801);
+  assert.deepEqual(bundled.lines.filter(line => line.productId === bundleA).map(line => line.agreedPrice).sort(), [1600, 1600, 1601]);
+  assert.equal(bundled.lines.find(line => line.productId === bundleB).agreedPrice, 3201);
+  const bundleCsv = await ok(mert("export?kind=sales"));
+  assert.match(bundleCsv, /Kargo ve kesinti sonrası net \(TL\)/);
+  assert.ok(bundleCsv.split("\r\n").some(line => line.includes('"BUNDLE-1"') && line.endsWith('"69,00"')));
+  await ok(ayse("order-status", { id: bundleId, status: "cancelled", date }));
+  const zeroListBundle = { ...bundle, platform: "Dolap", reference: "BUNDLE-2", saleTotal: 3, netAfterShipping: -25, packing: 0 };
+  const zeroListId = (await ok(ayse("order", zeroListBundle))).id;
+  const fallback = (await state()).orders.find(({ id }) => id === zeroListId);
+  assert.equal(fallback.lines.filter(line => line.productId === bundleA).reduce((sum, line) => sum + line.agreedPrice * line.quantity, 0), 2);
+  assert.equal(fallback.profit, -1925);
+  assert.equal((await state()).summary.cashBalance, 31000);
+
   await ok(mert("logout", {}));
   assert.equal((await ok(mert("session"))).user, null);
   assert.equal((await mert("state")).status, 401);

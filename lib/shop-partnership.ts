@@ -14,6 +14,7 @@ type Sale = {
   status: string;
   platformFee: number;
   shipping: number;
+  netAfterShipping?: number | null;
   packing: number;
   receiptDate: string | null;
   receiptAmount: number | null;
@@ -104,7 +105,9 @@ export function calculatePartnership(data: PartnershipData, from: string, throug
     if (missing && (inPeriod(order.date) || collected)) missingShares.add(order.id);
 
     if (inPeriod(order.date)) {
-      const fees = allocate(order.platformFee + order.shipping + order.packing, weights);
+      const deductions = order.netAfterShipping == null ? order.platformFee + order.shipping
+        : groups.reduce((sum, group) => sum + group.gross, 0) - order.netAfterShipping;
+      const fees = allocate(deductions + order.packing, weights);
       groups.forEach((group, i) => {
         const product = products.get(group.productId) ?? { name: group.productName, quantity: 0, profit: 0, firstProfit: 0, secondProfit: 0, unassigned: 0 };
         const profit = group.gross - fees[i] - group.cost;

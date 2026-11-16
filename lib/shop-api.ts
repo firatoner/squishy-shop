@@ -137,9 +137,19 @@ function mutation(action: string, input: Input) {
     case "order": {
       const platform = input.platform;
       if (platform !== "Dolap" && platform !== "Gardrops") fail("Dolap veya Gardrops seçin.");
-      return { platform, date: date(input.date), reference: strings(input.reference, "Sipariş numarası", 120, false),
-        lines: uniqueProducts(list(input.lines, (line) => ({ productId: id(line.productId), quantity: quantity(line.quantity), agreedPrice: money(line.agreedPrice, "Anlaşılan fiyat") }))),
-        platformFee: money(input.platformFee, "Platform kesintisi"), shipping: money(input.shipping, "Kargo"), packing: money(input.packing, "Paketleme") };
+      const saleTotal = input.saleTotal === undefined ? undefined : money(input.saleTotal, "Toplam satış tutarı");
+      const lines = uniqueProducts(list(input.lines, line => ({
+        productId: id(line.productId), quantity: quantity(line.quantity),
+        agreedPrice: saleTotal === undefined ? money(line.agreedPrice, "Anlaşılan fiyat") : undefined,
+      })));
+      const gross = saleTotal ?? lines.reduce((sum, line) => sum + line.quantity * (line.agreedPrice ?? 0), 0);
+      const netAfterShipping = input.netAfterShipping === undefined ? undefined
+        : integer(input.netAfterShipping, "Kargo ve kesinti sonrası net tutar", -100_000_000, 100_000_000);
+      if (netAfterShipping !== undefined && netAfterShipping > gross) fail("Net tutar satış toplamını aşamaz.");
+      return { platform, date: date(input.date), reference: strings(input.reference, "Sipariş numarası", 120, false), lines, saleTotal, netAfterShipping,
+        platformFee: netAfterShipping === undefined ? money(input.platformFee, "Platform kesintisi") : 0,
+        shipping: netAfterShipping === undefined ? money(input.shipping, "Kargo") : 0,
+        packing: money(input.packing, "Paketleme") };
     }
     case "order-status": {
       const status = input.status;
@@ -259,6 +269,7 @@ type ExportState = {
   users: User[];
   orders: Array<{ id: number; date: string; reference: string; platform: string; status: string; actorId: number;
     gross: number; discount: number; platformFee: number; shipping: number; packing: number; cost: number;
+    netAfterShipping?: number | null;
     expectedReceipt: number; profit: number; receiptDate: string | null; receiptAmount: number | null; recipientId: number | null;
     lines: Array<{ productName: string; quantity: number; listPrice: number; agreedPrice: number; unitCost: number; cost: number }> }>;
   stock: Array<{ date: string; kind: string; productName: string; quantity: number; unitCost: number; reference: string; actorId: number }>;
@@ -295,14 +306,15 @@ async function exportCsv(url: URL, env: Environment) {
       ["Satış tarihi", "Platform", "Sipariş", "Durum", "Kaydeden", "Ürün", "Adet", "Birim liste fiyatı (TL)",
         "Birim satış fiyatı (TL)", "Satır maliyeti (TL)", "Sipariş brüt (TL)", "Sipariş indirim (TL)",
         "Kesinti (TL)", "Kargo (TL)", "Paketleme (TL)", "Toplam maliyet (TL)", "Beklenen ödeme (TL)", "Kâr (TL)",
-        "Tahsilat tarihi", "Gelen ödeme (TL)", "Alan"],
+        "Tahsilat tarihi", "Gelen ödeme (TL)", "Alan", "Kargo ve kesinti sonrası net (TL)"],
       ...state.orders.filter((order) => includes(order.date)).flatMap((order) =>
         order.lines.map((line, index) => [
           dateCsv(order.date), order.platform, order.reference || String(order.id), csvStatus[order.status], name(order.actorId),
           line.productName, line.quantity, moneyCsv(line.listPrice), moneyCsv(line.agreedPrice), moneyCsv(line.cost),
-          ...(index === 0 ? [moneyCsv(order.gross), moneyCsv(order.discount), moneyCsv(order.platformFee), moneyCsv(order.shipping),
-            moneyCsv(order.packing), moneyCsv(order.cost), moneyCsv(order.expectedReceipt), moneyCsv(order.profit),
-            dateCsv(order.receiptDate), moneyCsv(order.receiptAmount), name(order.recipientId)] : Array<Cell>(11).fill(null)),
+          ...(index === 0 ? [moneyCsv(order.gross), moneyCsv(order.discount),
+            moneyCsv(order.netAfterShipping == null ? order.platformFee : null), moneyCsv(order.netAfterShipping == null ? order.shipping : null),
+            moneyCsv(order.packing), moneyCsv(order.cost), moneyCsv(order.netAfterShipping == null ? order.expectedReceipt : null), moneyCsv(order.profit),
+            dateCsv(order.receiptDate), moneyCsv(order.receiptAmount), name(order.recipientId), moneyCsv(order.netAfterShipping ?? null)] : Array<Cell>(12).fill(null)),
         ]),
       ),
     ];
