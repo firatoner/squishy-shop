@@ -103,8 +103,14 @@ function mutation(action: string, input: Input) {
           (typeof photo !== "string" || photo.length > 600_000 || !parsePhoto(photo))) {
         fail("Fotoğraf 450 KB altında bir JPEG, PNG veya WebP olmalı.");
       }
-      return { id: productId, name: strings(input.name, "Ürün adı", 120), photo,
-        listPrice: money(input.listPrice, "Liste fiyatı"), lowThreshold: integer(input.lowThreshold, "Düşük stok eşiği", 0, 100_000) };
+      const prices = input.dolapListPrice === undefined && input.gardropsListPrice === undefined
+        ? { listPrice: money(input.listPrice, "Liste fiyatı") }
+        : {
+            dolapListPrice: money(input.dolapListPrice, "Dolap liste fiyatı"),
+            gardropsListPrice: money(input.gardropsListPrice, "Gardrops liste fiyatı"),
+          };
+      return { id: productId, name: strings(input.name, "Ürün adı", 120), photo, ...prices,
+        lowThreshold: integer(input.lowThreshold, "Düşük stok eşiği", 0, 100_000) };
     }
     case "purchase": {
       const lines = list(input.lines, (line) => ({ productId: id(line.productId), quantity: quantity(line.quantity), unitCost: money(line.unitCost, "Birim maliyet") }));

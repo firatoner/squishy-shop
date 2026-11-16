@@ -62,7 +62,7 @@ test("Two members track inventory, sales, supplier payments, and expenses", asyn
   const mertId = (await ok(mert("session"))).user.id;
   const ayseId = (await ok(ayse("session"))).user.id;
   assert.notEqual(mertId, ayseId);
-  const productId = (await ok(mert("product", { name: "Peach", listPrice: 60000, lowThreshold: 1 }))).id;
+  const productId = (await ok(mert("product", { name: "Peach", dolapListPrice: 60000, gardropsListPrice: 70000, lowThreshold: 1 }))).id;
   const purchaseId = (await ok(mert("purchase", {
     name: "Wholesale September", date, total: 20000,
     lines: [{ productId, quantity: 1, unitCost: 20000 }],
@@ -82,8 +82,11 @@ test("Two members track inventory, sales, supplier payments, and expenses", asyn
   assert.equal(soldState.orders.length, 1);
   assert.equal(soldState.stock.filter(({ kind }) => kind === "sale").length, 1);
 
-  await ok(mert("product", { id: productId, name: "Peach", listPrice: 65000, lowThreshold: 1 }));
-  const order = (await state()).orders.find(({ id }) => id === firstOrderId);
+  await ok(mert("product", { id: productId, name: "Peach", dolapListPrice: 65000, gardropsListPrice: 75000, lowThreshold: 1 }));
+  const updatedState = await state();
+  const { dolapListPrice, gardropsListPrice } = updatedState.products.find(({ id }) => id === productId);
+  assert.deepEqual([dolapListPrice, gardropsListPrice], [65000, 75000]);
+  const order = updatedState.orders.find(({ id }) => id === firstOrderId);
   assert.equal(order.lines[0].listPrice, 60000);
   assert.equal(order.discount, 5000);
   assert.equal(order.gross, 55000);
@@ -106,7 +109,7 @@ test("Two members track inventory, sales, supplier payments, and expenses", asyn
   await ok(mert("order-status", { id: receiptOrderId, status: "packed", date }));
   assert.equal((await state()).cash.filter(({ kind }) => kind === "receipt").length, 0);
   await ok(ayse("receipt", { id: receiptOrderId, date, amount: 51000, recipientId: mertId }));
-  const damagedProduct = (await ok(mert("product", { name: "Berry", listPrice: 2000, lowThreshold: 0 }))).id;
+  const damagedProduct = (await ok(mert("product", { name: "Berry", dolapListPrice: 2500, gardropsListPrice: 3000, lowThreshold: 0 }))).id;
   await ok(mert("purchase", {
     name: "Wholesale Berry", date, total: 1000, lines: [{ productId: damagedProduct, quantity: 1, unitCost: 1000 }],
   }));
@@ -114,6 +117,9 @@ test("Two members track inventory, sales, supplier payments, and expenses", asyn
     platform: "Gardrops", date, reference: "G-001", platformFee: 0, shipping: 0, packing: 0,
     lines: [{ productId: damagedProduct, quantity: 1, agreedPrice: 2000 }],
   }))).id;
+  const gardropsOrder = (await state()).orders.find(({ id }) => id === damagedOrder);
+  assert.equal(gardropsOrder.lines[0].listPrice, 3000);
+  assert.equal(gardropsOrder.discount, 1000);
   await ok(mert("order-status", { id: damagedOrder, status: "packed", date }));
   await ok(ayse("order-status", { id: damagedOrder, status: "returned", date, returns: [] }));
   assert.equal((await state()).products.find(({ id }) => id === damagedProduct).stock, 0);

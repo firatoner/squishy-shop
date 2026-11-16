@@ -4,7 +4,7 @@
 
 ## Kurulum ve yayın
 
-1. [Supabase SQL Editor](https://supabase.com/dashboard/projects) üzerinden `supabase/migrations/20261116225700_squishy_shop.sql` dosyasını bir kez çalıştırın. Geçiş bu projeye zaten uygulandıysa adımı atlayın. Alternatif olarak migration’ı bağlı Supabase projesine CLI ile uygulayın.
+1. [Supabase SQL Editor](https://supabase.com/dashboard/projects) üzerinden `supabase/migrations/` klasöründeki SQL dosyalarını tarih sırasıyla birer kez çalıştırın. Alternatif olarak bağlı Supabase projesinde bekleyen geçişleri CLI ile uygulayın. Mevcut kurulumda yeni sürümü yayına almadan önce `20261117004001_platform_list_prices.sql` geçişini uygulayın. Bu geçiş mevcut ürün fiyatını her iki platforma kopyalar.
 2. Kaynak dosyaları özel Git deponuza ekleyin. Vercel’de projeyi Next.js olarak içe aktarın ve Node.js 22 veya üstünü seçin.
 3. **Settings → Environment Variables** altında Production için bu değişkenleri ekleyin. Preview ortamında ayrı bir test Supabase projesi kullanın.
 
@@ -20,8 +20,8 @@
 
 ## İşlemler
 
-- Ürün kartına fotoğraf, liste fiyatı ve düşük stok eşiği girin. Koli kaydındaki adet × birim maliyet toplamı koli tutarıyla eşleşmelidir. Stok teslim kaydıyla artar, kasa gerçek ödeme günü azalır. Ödeme daha sonra ilgili koliye kaydedilebilir.
-- Satış eklerken Dolap veya Gardrops’u seçin ve ürün başına anlaşılan birim fiyatı girin. Liste fiyatı, indirim ve FIFO maliyeti satış anında sabitlenir. Satılan son ürün için eşzamanlı iki kayıttan yalnızca biri kabul edilir.
+- Ürün kartına fotoğraf, ayrı Dolap ve Gardrops liste fiyatları ve düşük stok eşiği girin. Koli kaydındaki adet × birim maliyet toplamı koli tutarıyla eşleşmelidir. Stok teslim kaydıyla artar, kasa gerçek ödeme günü azalır. Ödeme daha sonra ilgili koliye kaydedilebilir.
+- Satış eklerken Dolap veya Gardrops’u seçin. Anlaşılan birim fiyat seçilen platformun liste fiyatıyla dolar ve düzenlenebilir. Liste fiyatı, indirim ve FIFO maliyeti satış anında sabitlenir. Satılan son ürün için eşzamanlı iki kayıttan yalnızca biri kabul edilir.
 - İptal ayrılan adedi stoğa döndürür. İadede satılabilir adedi her ürün için ayrı girin. Satılabilir sıfır adet stoğu değiştirmez. Diğer platformdaki ilanı manuel kontrol edin.
 - Beklenen tahsilat satış tutarından platform kesintisi düşülerek hesaplanır. Sipariş kârı hesaplanırken satıcıya ait kargo, paketleme ve ürün maliyeti de düşülür. Örneğin 550 TL satış, 40 TL kesinti, 200 TL maliyet ve 10 TL paketleme için beklenen ödeme 510 TL, kâr 300 TL’dir.
 - Kasa hareketi için platform ödemesinin tarihini, gerçek tutarını ve alan hesabı girin. İptal veya iade önceki gerçek tahsilatı silmez. Gerçekleşen ayrı bir iade ödemesini ilgili notla gider olarak kaydedin. İptal ve iadeler aktif satış toplamından çıkar.
@@ -38,5 +38,5 @@ npm run build
 npm run test:api
 ```
 
-Yerel çalıştırma için `.env.example` dosyasını `.env.local` olarak kopyalayıp ayrı bir test Supabase projesiyle doldurun. Uçtan uca test için boş test veritabanında migration’ı çalıştırın ve uygulamayı başlatın. `SHOP_TEST_BASE_URL` ve `SHOP_TEST_SETUP_TOKEN` değerlerini ayarlayıp `npm run test:integration` komutunu çalıştırın. Bu test iki deneme hesabı ve test kayıtları oluşturur. `tests/shop.database.test.sql` PostgreSQL RPC iş akışını tek işlemde dener ve test satırlarını geri alır.
+Yerel çalıştırma için `.env.example` dosyasını `.env.local` olarak kopyalayıp ayrı bir test Supabase projesiyle doldurun. Uçtan uca test için boş test veritabanında tüm geçişleri tarih sırasıyla uygulayın ve uygulamayı başlatın. `SHOP_TEST_BASE_URL` ve `SHOP_TEST_SETUP_TOKEN` değerlerini ayarlayıp `npm run test:integration` komutunu çalıştırın. Bu test iki deneme hesabı ve test kayıtları oluşturur. `tests/shop.database.test.sql` PostgreSQL RPC iş akışını tek işlemde dener ve test satırlarını geri alır.
 

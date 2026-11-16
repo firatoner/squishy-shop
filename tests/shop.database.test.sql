@@ -36,7 +36,10 @@ begin
   assert (public.shop_auth('session','{"tokenHash":"fixture-first"}')->'user'->>'id')::integer = actor;
   assert (public.shop_auth('session','{"tokenHash":"fixture-second"}')->'user'->>'id')::integer = partner;
 
-  product := (public.shop_write(actor,'product','{"name":"Peach","listPrice":60000,"lowThreshold":1}')->>'id')::integer;
+  product := (public.shop_write(actor,'product','{"name":"Peach","dolapListPrice":60000,"gardropsListPrice":64000,"lowThreshold":1}')->>'id')::integer;
+  result := public.shop_read('state','{}')->'products'->0;
+  assert (result->>'dolapListPrice')::integer = 60000;
+  assert (result->>'gardropsListPrice')::integer = 64000;
   purchase := (public.shop_write(actor,'purchase',jsonb_build_object(
     'date','2026-09-15','total',20000,'name','QA wholesale',
     'lines',jsonb_build_array(jsonb_build_object('productId',product,'quantity',1,'unitCost',20000))
@@ -58,7 +61,9 @@ begin
   end;
   assert jsonb_array_length(public.shop_read('state','{}')->'orders') = 1;
 
-  perform public.shop_write(actor,'product',jsonb_build_object('id',product,'name','Peach','listPrice',65000,'lowThreshold',1));
+  perform public.shop_write(actor,'product',jsonb_build_object(
+    'id',product,'name','Peach','dolapListPrice',65000,'gardropsListPrice',70000,'lowThreshold',1
+  ));
   result := public.shop_read('state','{}')->'orders'->0;
   assert (result->'lines'->0->>'listPrice')::integer = 60000;
   assert (result->>'discount')::integer = 5000;
@@ -76,7 +81,10 @@ begin
   end;
   assert (public.shop_read('state','{}')->'products'->0->>'stock')::integer = 1;
 
-  second_order := (public.shop_write(actor,'order',order_payload || '{"reference":"QA-2"}')->>'id')::integer;
+  second_order := (public.shop_write(actor,'order',order_payload || '{"platform":"Gardrops","reference":"QA-2"}')->>'id')::integer;
+  select value into result from jsonb_array_elements(public.shop_read('state','{}')->'orders') where (value->>'id')::integer = second_order;
+  assert (result->'lines'->0->>'listPrice')::integer = 70000;
+  assert (result->>'discount')::integer = 15000;
   stock_payload := jsonb_build_object('id',second_order,'date','2026-09-16');
   perform public.shop_write(actor,'order-status',stock_payload || '{"status":"packed"}');
   perform public.shop_write(partner,'order-status',stock_payload || '{"status":"returned","sellable":true}');

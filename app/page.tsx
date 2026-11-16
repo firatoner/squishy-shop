@@ -5,7 +5,8 @@ import { Activity, Archive, Boxes, CalendarDays, Check, Download, Heart, House, 
 
 type Member = { id: number; username: string; name: string };
 type Session = { user: Member | null; needsSetup: boolean };
-type Product = { id: number; name: string; photo: string | null; listPrice: number; lowThreshold: number; stock: number };
+type Platform = "Dolap" | "Gardrops";
+type Product = { id: number; name: string; photo: string | null; dolapListPrice: number; gardropsListPrice: number; lowThreshold: number; stock: number };
 type Purchase = {
   id: number; name: string; date: string; total: number; actorId: number;
   paymentDate: string | null; payerId: number | null;
@@ -13,7 +14,7 @@ type Purchase = {
 };
 type OrderStatus = "pending" | "packed" | "cancelled" | "returned";
 type Order = {
-  id: number; platform: "Dolap" | "Gardrops"; reference: string | null; date: string; status: OrderStatus;
+  id: number; platform: Platform; reference: string | null; date: string; status: OrderStatus;
   gross: number; discount: number; platformFee: number; shipping: number; packing: number; cost: number;
   expectedReceipt: number; profit: number; actorId: number; receiptDate: string | null; receiptAmount: number | null;
   recipientId: number | null; returnSellable?: boolean | null; returnLines?: { productId: number; quantity: number }[];
@@ -198,7 +199,13 @@ function Products({ products, open }: { products: Product[]; open: (editor: Edit
     {shown.length ? <div className="product-grid">{shown.map(product => <article className="product-card" key={product.id}>
       {/* eslint-disable-next-line @next/next/no-img-element */}
       {product.photo ? <img className="product-image" src={product.photo} alt={product.name} loading="lazy" /> : <div className="product-placeholder"><Heart aria-hidden="true" /></div>}
-      <div className="product-body"><h3>{product.name}</h3><div className="inline"><strong>{money(product.listPrice)}</strong><span className={"pill " + (product.stock <= product.lowThreshold ? "warning" : "ok")}>{product.stock} adet</span></div><p className="subtle">Düşük stok eşiği {product.lowThreshold}</p><button onClick={() => open({ type: "product", product })}>Düzenle</button></div>
+      <div className="product-body">
+        <div className="inline"><h3>{product.name}</h3><span className={"pill " + (product.stock <= product.lowThreshold ? "warning" : "ok")}>{product.stock} adet</span></div>
+        <div className="inline"><span>Dolap</span><strong>{money(product.dolapListPrice)}</strong></div>
+        <div className="inline"><span>Gardrops</span><strong>{money(product.gardropsListPrice)}</strong></div>
+        <p className="subtle">Düşük stok eşiği {product.lowThreshold}</p>
+        <button onClick={() => open({ type: "product", product })}>Düzenle</button>
+      </div>
     </article>)}</div> : <Empty>{products.length ? "Aramana uygun ürün bulunamadı." : "Henüz ürün kaydı yok. İlk ürünü ekleyerek başlayabilirsin."}</Empty>}
   </>;
 }
@@ -351,13 +358,16 @@ function ProductForm({ product, busy, save }: { product?: Product; busy: boolean
   const [photoError, setPhotoError] = useState("");
   const [loading, setLoading] = useState(false);
   return <form className="form" onSubmit={event => save(event, "product", data => ({
-    id: product?.id, name: field(data, "name"), photo, listPrice: requiredMoney(field(data, "listPrice")), lowThreshold: Number(field(data, "lowThreshold")),
+    id: product?.id, name: field(data, "name"), photo, lowThreshold: Number(field(data, "lowThreshold")),
+    dolapListPrice: requiredMoney(field(data, "dolapListPrice")),
+    gardropsListPrice: requiredMoney(field(data, "gardropsListPrice")),
   }))}>
     <label>Ürün adı<input name="name" defaultValue={product?.name} maxLength={120} required /></label>
     <div className="form-row">
-      <AmountField label="Liste fiyatı (₺)" name="listPrice" value={product ? moneyInput(product.listPrice) : undefined} />
-      <label>Düşük stok eşiği<input name="lowThreshold" type="number" inputMode="numeric" min={0} step={1} defaultValue={product?.lowThreshold ?? 2} required /></label>
+      <AmountField label="Dolap liste fiyatı (₺)" name="dolapListPrice" value={product ? moneyInput(product.dolapListPrice) : undefined} />
+      <AmountField label="Gardrops liste fiyatı (₺)" name="gardropsListPrice" value={product ? moneyInput(product.gardropsListPrice) : undefined} />
     </div>
+    <label>Düşük stok eşiği<input name="lowThreshold" type="number" inputMode="numeric" min={0} step={1} defaultValue={product?.lowThreshold ?? 2} required /></label>
     <label>Ürün fotoğrafı<input type="file" accept="image/jpeg,image/png,image/webp" onChange={async event => {
       const file = event.target.files?.[0];
       if (!file) return;
@@ -377,12 +387,13 @@ function ProductForm({ product, busy, save }: { product?: Product; busy: boolean
   </form>;
 }
 type Save = (event: FormEvent<HTMLFormElement>, action: string, build: (data: FormData) => unknown) => void;
-type DraftLine = { id: number; productId: string; quantity: string; price: string };
+type DraftLine = { id: number; productId: string; quantity: string; priceOverride: string | null };
 function LinesForm({ mode, shop, user, busy, save, addProduct }: { mode: "purchase" | "order"; shop: Shop; user: Member; busy: boolean; save: Save; addProduct: () => void }) {
   const purchase = mode === "purchase";
   const products = shop.products.filter(product => purchase || product.stock > 0);
-  const [lines, setLines] = useState<DraftLine[]>([{ id: 1, productId: "", quantity: "1", price: "" }]);
+  const [lines, setLines] = useState<DraftLine[]>([{ id: 1, productId: "", quantity: "1", priceOverride: null }]);
   const nextLineId = useRef(2);
+  const [platform, setPlatform] = useState<Platform>("Dolap");
   const [total, setTotal] = useState("");
   const [fee, setFee] = useState("0");
   const [shipping, setShipping] = useState("0");
@@ -391,12 +402,16 @@ function LinesForm({ mode, shop, user, busy, save, addProduct }: { mode: "purcha
   function updateLine(id: number, change: Partial<DraftLine>) {
     setLines(active => active.map(line => line.id === id ? { ...line, ...change } : line));
   }
-  const sum = lines.reduce((amount, line) => amount + Number(line.quantity) * (toMoney(line.price) || 0), 0);
-  const listTotal = lines.reduce((amount, line) => amount + Number(line.quantity) * (products.find(product => product.id === Number(line.productId))?.listPrice ?? 0), 0);
-  const discount = lines.reduce((amount, line) => {
-    const listPrice = products.find(product => product.id === Number(line.productId))?.listPrice ?? 0;
-    return amount + Number(line.quantity) * Math.max(0, listPrice - (toMoney(line.price) || 0));
-  }, 0);
+  const rows = lines.map(line => {
+    const product = products.find(product => product.id === Number(line.productId));
+    const listPrice = platform === "Dolap" ? product?.dolapListPrice : product?.gardropsListPrice;
+    const price = line.priceOverride ?? (!purchase && listPrice !== undefined ? moneyInput(listPrice) : "");
+    return { line, product, listPrice, price };
+  });
+  const sum = rows.reduce((amount, { line, price }) => amount + Number(line.quantity) * (toMoney(price) || 0), 0);
+  const listTotal = rows.reduce((amount, { line, listPrice }) => amount + Number(line.quantity) * (listPrice ?? 0), 0);
+  const discount = rows.reduce((amount, { line, listPrice, price }) =>
+    amount + Number(line.quantity) * Math.max(0, (listPrice ?? 0) - (toMoney(price) || 0)), 0);
   const receipt = sum - (toMoney(fee) || 0);
   const totalDifference = toMoney(total) - sum;
   if (!products.length) return <div className="stack">
@@ -405,7 +420,7 @@ function LinesForm({ mode, shop, user, busy, save, addProduct }: { mode: "purcha
   </div>;
   return <form className="form" onSubmit={event => save(event, mode, data => {
     const date = field(data, "date");
-    const baseLines = lines.map(line => ({ productId: Number(line.productId), quantity: Number(line.quantity), price: requiredMoney(line.price) }));
+    const baseLines = rows.map(({ line, price }) => ({ productId: Number(line.productId), quantity: Number(line.quantity), price: requiredMoney(price) }));
     if (purchase) {
       const amount = requiredMoney(total);
       if (amount !== sum) throw new Error("Kutu toplamı, ürün satırlarının toplamıyla eşleşmeli.");
@@ -416,39 +431,34 @@ function LinesForm({ mode, shop, user, busy, save, addProduct }: { mode: "purcha
       };
     }
     return {
-      platform: field(data, "platform"), date, reference: field(data, "reference").trim() || undefined,
+      platform, date, reference: field(data, "reference").trim() || undefined,
       lines: baseLines.map(({ price, ...line }) => ({ ...line, agreedPrice: price })),
       platformFee: requiredMoney(fee), shipping: requiredMoney(shipping), packing: requiredMoney(packing),
     };
   })}>
     <div className="form-row">
-      {purchase ? <label>Kutu adı<input name="name" maxLength={120} required /></label> : <label>Platform<select name="platform"><option>Dolap</option><option>Gardrops</option></select></label>}
+      {purchase ? <label>Kutu adı<input name="name" maxLength={120} required /></label> : <label>Platform<select name="platform" value={platform} onChange={event => setPlatform(event.target.value as Platform)}><option>Dolap</option><option>Gardrops</option></select></label>}
       <DateField label={purchase ? "Alım tarihi" : "Satış tarihi"} />
     </div>
     {!purchase && <label>Sipariş numarası veya referans (isteğe bağlı)<input name="reference" maxLength={100} /></label>}
-    {lines.map((line, index) => {
-      const product = products.find(product => product.id === Number(line.productId));
-      return <fieldset className="line-editor" key={line.id}>
+    {rows.map(({ line, product, listPrice, price }, index) => (
+      <fieldset className="line-editor" key={line.id}>
         <legend>Ürün {index + 1}</legend>
-        <label>Ürün seç<select value={line.productId} onChange={event => {
-          const productId = event.target.value;
-          const selected = products.find(product => product.id === Number(productId));
-          updateLine(line.id, { productId, quantity: "1", price: !purchase && selected ? moneyInput(selected.listPrice) : "" });
-        }} required>
+        <label>Ürün seç<select value={line.productId} onChange={event => updateLine(line.id, { productId: event.target.value, quantity: "1", priceOverride: null })} required>
           <option value="">Ürün seç</option>
           {products.filter(product => line.productId === String(product.id) || !lines.some(other => other.id !== line.id && other.productId === String(product.id))).map(product => <option key={product.id} value={product.id}>{product.name}{purchase ? "" : " · " + product.stock + " adet"}</option>)}
         </select></label>
         <div className="form-row">
           <label>Adet<input type="number" min={1} max={purchase ? undefined : product?.stock} inputMode="numeric" step={1} value={line.quantity} onChange={event => updateLine(line.id, { quantity: event.target.value })} required /></label>
-          <label>{purchase ? "Birim maliyet (₺)" : "Anlaşılan birim fiyat (₺)"}<input inputMode="decimal" value={line.price} onChange={event => updateLine(line.id, { price: event.target.value })} maxLength={13} placeholder="0,00" required /></label>
+          <label>{purchase ? "Birim maliyet (₺)" : "Anlaşılan birim fiyat (₺)"}<input inputMode="decimal" value={price} onChange={event => updateLine(line.id, { priceOverride: event.target.value })} maxLength={13} placeholder="0,00" required /></label>
         </div>
-        {product && !purchase && <p className="subtle">Liste fiyatı {money(product.listPrice)}</p>}
+        {!purchase && listPrice !== undefined && <p className="subtle">{platform} liste fiyatı {money(listPrice)}</p>}
         {lines.length > 1 && <div className="actions"><button className="danger" type="button" onClick={() => setLines(active => active.filter(other => other.id !== line.id))}>Satırı kaldır</button></div>}
-      </fieldset>;
-    })}
+      </fieldset>
+    ))}
     {lines.length < products.length && <div className="actions"><button type="button" onClick={() => {
       const id = nextLineId.current++;
-      setLines(active => [...active, { id, productId: "", quantity: "1", price: "" }]);
+      setLines(active => [...active, { id, productId: "", quantity: "1", priceOverride: null }]);
     }}><Plus className="icon" aria-hidden="true" />Bir ürün daha ekle</button></div>}
     {purchase ? <>
       <label>Faturadaki kutu toplamı (₺)<input inputMode="decimal" value={total} onChange={event => setTotal(event.target.value)} maxLength={13} placeholder="0,00" required /></label>
