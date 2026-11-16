@@ -1,7 +1,7 @@
 import { createHash, pbkdf2, randomBytes, timingSafeEqual } from "node:crypto";
 import { promisify } from "node:util";
 
-export type Rpc = <T>(group: "auth" | "write" | "read" | "cash_write", data: Record<string, unknown>) => Promise<T>;
+export type Rpc = <T>(group: "auth" | "write" | "read" | "cash_write" | "partnership_write", data: Record<string, unknown>) => Promise<T>;
 type Environment = { rpc: Rpc; setupToken?: string; secureCookies: boolean };
 type Input = Record<string, unknown>;
 type User = { id: number; name: string; username: string };
@@ -93,11 +93,14 @@ function parsePhoto(value: string) {
   return { bytes: new Uint8Array(image), type: match[1] };
 }
 
+const partnerShare = (value: unknown) => integer(value, "Ortaklık payı", 0, 100);
+
 function expenseFields(input: Input) {
   return {
     category: strings(input.category, "Gider kategorisi", 80),
     amount: money(input.amount, "Gider tutarı", 1),
     note: strings(input.note, "Not", 500, false),
+    firstPartnerShare: input.firstPartnerShare == null ? input.firstPartnerShare : partnerShare(input.firstPartnerShare),
   };
 }
 
@@ -118,6 +121,7 @@ function mutation(action: string, input: Input) {
             gardropsListPrice: money(input.gardropsListPrice, "Gardrops liste fiyatı"),
           };
       return { id: productId, name: strings(input.name, "Ürün adı", 120), photo, ...prices,
+        firstPartnerShare: input.firstPartnerShare === undefined ? undefined : partnerShare(input.firstPartnerShare),
         lowThreshold: integer(input.lowThreshold, "Düşük stok eşiği", 0, 100_000) };
     }
     case "purchase": {
@@ -147,6 +151,17 @@ function mutation(action: string, input: Input) {
     }
     case "receipt":
       return { id: id(input.id), date: date(input.date), amount: money(input.amount, "Gelen tutar", 1), recipientId: id(input.recipientId) };
+    case "order-share":
+      return { id: id(input.id), productId: id(input.productId), firstPartnerShare: partnerShare(input.firstPartnerShare) };
+    case "partner-transfer": {
+      const senderId = id(input.senderId);
+      const recipientId = id(input.recipientId);
+      if (senderId === recipientId) fail("Transfer için iki farklı ortak seçin.");
+      return { senderId, recipientId, date: date(input.date), amount: money(input.amount, "Transfer tutarı", 1),
+        note: strings(input.note, "Not", 500, false) };
+    }
+    case "partner-transfer-delete":
+      return { id: id(input.id) };
     case "expense":
       return { ...expenseFields(input), date: date(input.date), payerId: id(input.payerId) };
     case "cash-edit":
@@ -350,7 +365,9 @@ export async function handleShopRequest(request: Request, action: string, env: E
     }
     if (method === "POST") {
       const p_data = mutation(action, await body(request));
-      const group = action === "cash-edit" || action === "cash-delete" ? "cash_write" : "write";
+      const group = action === "cash-edit" || action === "cash-delete" ? "cash_write"
+        : action === "order-share" || action === "partner-transfer" || action === "partner-transfer-delete" ? "partnership_write"
+        : "write";
       return json(await env.rpc(group, { p_action: action, p_actor: session.user.id, p_data }));
     }
     throw new ShopError(404, "İşlem bulunamadı.");

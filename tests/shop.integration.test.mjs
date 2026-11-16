@@ -62,7 +62,7 @@ test("Two members track inventory, sales, supplier payments, and expenses", asyn
   const mertId = (await ok(mert("session"))).user.id;
   const ayseId = (await ok(ayse("session"))).user.id;
   assert.notEqual(mertId, ayseId);
-  const productId = (await ok(mert("product", { name: "Peach", dolapListPrice: 60000, gardropsListPrice: 70000, lowThreshold: 1 }))).id;
+  const productId = (await ok(mert("product", { name: "Peach", dolapListPrice: 60000, gardropsListPrice: 70000, lowThreshold: 1, firstPartnerShare: 70 }))).id;
   const purchaseId = (await ok(mert("purchase", {
     name: "Wholesale September", date, total: 20000,
     lines: [{ productId, quantity: 1, unitCost: 20000 }],
@@ -82,12 +82,14 @@ test("Two members track inventory, sales, supplier payments, and expenses", asyn
   assert.equal(soldState.orders.length, 1);
   assert.equal(soldState.stock.filter(({ kind }) => kind === "sale").length, 1);
 
-  await ok(mert("product", { id: productId, name: "Peach", dolapListPrice: 65000, gardropsListPrice: 75000, lowThreshold: 1 }));
+  await ok(mert("product", { id: productId, name: "Peach", dolapListPrice: 65000, gardropsListPrice: 75000, lowThreshold: 1, firstPartnerShare: 25 }));
   const updatedState = await state();
   const { dolapListPrice, gardropsListPrice } = updatedState.products.find(({ id }) => id === productId);
   assert.deepEqual([dolapListPrice, gardropsListPrice], [65000, 75000]);
   const order = updatedState.orders.find(({ id }) => id === firstOrderId);
   assert.equal(order.lines[0].listPrice, 60000);
+  assert.equal(order.lines[0].firstPartnerShare, 70);
+  assert.equal(order.lines[0].purchaseId, purchaseId);
   assert.equal(order.discount, 5000);
   assert.equal(order.gross, 55000);
   assert.equal(order.expectedReceipt, 51000);
@@ -119,6 +121,11 @@ test("Two members track inventory, sales, supplier payments, and expenses", asyn
   }))).id;
   const gardropsOrder = (await state()).orders.find(({ id }) => id === damagedOrder);
   assert.equal(gardropsOrder.lines[0].listPrice, 3000);
+  assert.equal(gardropsOrder.lines[0].firstPartnerShare, null);
+  const lateShare = { id: damagedOrder, productId: damagedProduct, firstPartnerShare: 35 };
+  await ok(ayse("order-share", lateShare));
+  assert.equal((await ayse("order-share", { ...lateShare, firstPartnerShare: 40 })).status, 409);
+  assert.equal((await state()).orders.find(({ id }) => id === damagedOrder).lines[0].firstPartnerShare, 35);
   assert.equal(gardropsOrder.discount, 1000);
   await ok(mert("order-status", { id: damagedOrder, status: "packed", date }));
   await ok(ayse("order-status", { id: damagedOrder, status: "returned", date, returns: [] }));
@@ -152,19 +159,21 @@ test("Two members track inventory, sales, supplier payments, and expenses", asyn
   const corrections = [
     { kind: "receipt", id: receiptOrderId, date: "2026-09-17", amount: 50000, memberId: ayseId },
     { kind: "purchase", id: purchaseId, date: "2026-09-18", memberId: ayseId },
-    { kind: "expense", id: expenseId, date: "2026-09-19", amount: 580, memberId: mertId, category: "Kargo", note: "Updated shipping" },
+    { kind: "expense", id: expenseId, date: "2026-09-19", amount: 580, memberId: mertId, category: "Kargo", note: "Updated shipping", firstPartnerShare: 0 },
   ];
   assert.equal((await client()("cash-delete", corrections[0])).status, 401);
   assert.equal((await ayse("cash-edit", { ...corrections[0], amount: 0 })).status, 400);
   for (const correction of corrections) await ok(ayse("cash-edit", correction));
   const corrected = await state();
   const receipt = corrected.orders.find(({ id }) => id === receiptOrderId);
+  assert.equal(receipt.lines[0].firstPartnerShare, 25);
   assert.deepEqual([receipt.receiptDate, receipt.receiptAmount, receipt.recipientId], ["2026-09-17", 50000, ayseId]);
   const purchase = corrected.purchases.find(({ id }) => id === purchaseId);
   assert.deepEqual([purchase.paymentDate, purchase.payerId, purchase.total], ["2026-09-18", ayseId, 20000]);
   const expense = corrected.expenses.find(({ id }) => id === expenseId);
   assert.deepEqual([expense.date, expense.amount, expense.payerId, expense.actorId, expense.category, expense.note],
     ["2026-09-19", 580, mertId, mertId, "Kargo", "Updated shipping"]);
+  assert.equal(expense.firstPartnerShare, 0);
   assert.equal(corrected.summary.cashBalance, 29420);
   assert.match(await ok(mert("export?kind=expenses")), /Updated shipping/);
 
@@ -181,6 +190,15 @@ test("Two members track inventory, sales, supplier payments, and expenses", asyn
   assert.doesNotMatch(await ok(mert("export?kind=expenses")), /Updated shipping/);
   await ok(ayse("receipt", { id: receiptOrderId, date, amount: 51000, recipientId: mertId }));
   await ok(ayse("purchase-payment", { id: purchaseId, date, payerId: mertId }));
+  const transferPayload = { senderId: mertId, recipientId: ayseId, date, amount: 12345, note: "Partner settlement" };
+  assert.equal((await client()("partner-transfer", transferPayload)).status, 401);
+  assert.equal((await ayse("partner-transfer", { ...transferPayload, recipientId: mertId })).status, 400);
+  const transferId = (await ok(mert("partner-transfer", transferPayload))).id;
+  const transferred = await state();
+  assert.deepEqual(transferred.partnerTransfers, [{ id: transferId, ...transferPayload }]);
+  assert.equal(transferred.summary.cashBalance, 31000);
+  await ok(ayse("partner-transfer-delete", { id: transferId }));
+  assert.deepEqual((await state()).partnerTransfers, []);
 
   await ok(mert("logout", {}));
   assert.equal((await ok(mert("session"))).user, null);
