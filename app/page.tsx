@@ -22,7 +22,9 @@ type Order = {
 };
 type Expense = { id: number; category: string; amount: number; date: string; payerId: number; actorId: number; note: string | null };
 type Stock = { id: number; productId: number; productName: string; date: string; kind: string; quantity: number; unitCost: number; actorId: number; reference: string };
-type Cash = { kind: string; id: number; date: string; amount: number; memberId: number; actorId: number; description: string };
+type CashKind = "purchase" | "receipt" | "expense";
+type CashEntry = { kind: CashKind; id: number; date: string; amount: number; description: string };
+type Cash = CashEntry & { memberId: number; actorId: number };
 type Audit = { id: number; action: string; entityId: number; actorId: number; createdAt: string; businessDate: string | null; status: OrderStatus | null };
 type Shop = {
   users: Member[]; products: Product[]; purchases: Purchase[]; orders: Order[]; expenses: Expense[]; stock: Stock[]; cash: Cash[]; audit: Audit[];
@@ -31,7 +33,10 @@ type Shop = {
 type PageName = "dashboard" | "products" | "orders" | "stock" | "cash" | "reports";
 type Editor =
   | { type: "product"; product?: Product }
-  | { type: "purchase" | "order" | "expense" }
+  | { type: "purchase" | "order" }
+  | { type: "expense"; expense?: Expense }
+  | { type: "cash-payment-edit"; payment: Cash }
+  | { type: "cash-delete"; entry: CashEntry }
   | { type: "purchase-payment"; purchase: Purchase }
   | { type: "receipt" | "order-detail"; order: Order }
   | { type: "order-status"; order: Order; status: "packed" | "cancelled" | "returned" };
@@ -51,6 +56,7 @@ const stockLabel: Record<string, string> = {
   purchase: "Stok alımı", sale: "Satış", cancelled: "Satış iptali", returned: "Satılabilir iade",
 };
 const expenseCategories = ["Ambalaj", "Kargo", "Malzeme", "Pazarlama", "Diğer"];
+const cashLabels: Record<CashKind, string> = { purchase: "Stok ödemesi", receipt: "Tahsilat", expense: "Gider" };
 const turkishMoney = new Intl.NumberFormat("tr-TR", { style: "currency", currency: "TRY" });
 function money(value: number) { return turkishMoney.format(value / 100); }
 function moneyInput(value: number) { return (value / 100).toFixed(2).replace(".", ","); }
@@ -249,14 +255,32 @@ function StockPage({ data, open }: { data: Shop; open: (editor: Editor) => void 
   </>;
 }
 function CashPage({ data, open }: { data: Shop; open: (editor: Editor) => void }) {
-  const labels: Record<string, string> = { purchase: "Stok ödemesi", receipt: "Tahsilat", expense: "Gider" };
+  const expenses = new Map(data.expenses.map(expense => [expense.id, expense]));
+  const actions = (entry: CashEntry, edit: Editor) => <div className="actions">
+    <button onClick={() => open(edit)}>Düzenle</button>
+    <button className="danger" onClick={() => open({ type: "cash-delete", entry })}>Sil</button>
+  </div>;
+  const expenseActions = (expense: Expense) => actions(
+    { kind: "expense", id: expense.id, date: expense.date, amount: expense.amount, description: expense.category },
+    { type: "expense", expense },
+  );
   return <>
     <SectionHeader title="Kasa ve giderler" description="Gerçekleşen para girişlerini, çıkışlarını ve ödemeyi yapan kişiyi izle."><AddButton primary onClick={() => open({ type: "expense" })}>Gider Ekle</AddButton></SectionHeader>
     <div className="stack">
       <Panel title="Toplam kasa bakiyesi" meta={<strong className="cash-value">{money(data.summary.cashBalance)}</strong>}>
-        {data.cash.length ? <Table headers={["Tarih", "İşlem", "Açıklama", "Hesap", "Tutar", "Ekleyen"]} rows={data.cash.map(item => [dateLabel(item.date), labels[item.kind], item.description, getMember(data.users, item.memberId), money(item.amount), item.memberId !== item.actorId ? getMember(data.users, item.actorId) : "—"])} /> : <Empty>Henüz kasa hareketi yok.</Empty>}
+        {data.cash.length ? <Table headers={["Tarih", "İşlem", "Açıklama", "Hesap", "Tutar", "Ekleyen", "İşlemler"]} rows={data.cash.map(item => {
+          const expense = expenses.get(item.id);
+          const rowActions = item.kind === "expense"
+            ? expense && expenseActions(expense)
+            : actions(item, { type: "cash-payment-edit", payment: item });
+          return [dateLabel(item.date), cashLabels[item.kind], item.description || "—", getMember(data.users, item.memberId),
+            money(item.amount), item.memberId !== item.actorId ? getMember(data.users, item.actorId) : "—", rowActions];
+        })} /> : <Empty>Henüz kasa hareketi yok.</Empty>}
       </Panel>
-      <Panel title="Giderler">{data.expenses.length ? <Table headers={["Tarih", "Kategori", "Not", "Ödeyen", "Tutar", "Ekleyen"]} rows={data.expenses.map(item => [dateLabel(item.date), item.category, item.note || "—", getMember(data.users, item.payerId), money(item.amount), item.payerId !== item.actorId ? getMember(data.users, item.actorId) : "—"])} /> : <Empty>Henüz gider kaydı yok.</Empty>}</Panel>
+      <Panel title="Giderler">{data.expenses.length ? <Table headers={["Tarih", "Kategori", "Not", "Ödeyen", "Tutar", "Ekleyen", "İşlemler"]} rows={data.expenses.map(item => [
+        dateLabel(item.date), item.category, item.note || "—", getMember(data.users, item.payerId), money(item.amount),
+        item.payerId !== item.actorId ? getMember(data.users, item.actorId) : "—", expenseActions(item),
+      ])} /> : <Empty>Henüz gider kaydı yok.</Empty>}</Panel>
     </div>
   </>;
 }
@@ -494,7 +518,10 @@ function orderProducts(order: Order) {
 }
 
 function OrderDetail({ order, users, audit, open }: { order: Order; users: Member[]; audit: Audit[]; open: (editor: Editor) => void }) {
-  const actions: Record<string, string> = { order: "Satış kaydedildi", "order-status": "Durum güncellendi", receipt: "Tahsilat kaydedildi" };
+  const actions: Record<string, string> = {
+    order: "Satış kaydedildi", "order-status": "Durum güncellendi", receipt: "Tahsilat kaydedildi",
+    "receipt-edit": "Tahsilat düzenlendi", "receipt-delete": "Tahsilat silindi",
+  };
   const history = audit.filter(item => item.entityId === order.id && Object.hasOwn(actions, item.action));
   return <div className="stack">
     <div className="inline"><p>{order.platform} · {order.reference || "#" + order.id} · {dateLabel(order.date)}</p><span className="pill">{statusLabel[order.status]}</span></div>
@@ -525,7 +552,9 @@ function getTitle(editor: Editor) {
     case "product": return editor.product ? "Ürünü düzenle" : "Ürün ekle";
     case "purchase": return "Stok alımı ekle";
     case "order": return "Satış ekle";
-    case "expense": return "Gider ekle";
+    case "expense": return editor.expense ? "Gideri düzenle" : "Gider ekle";
+    case "cash-payment-edit": return editor.payment.kind === "receipt" ? "Tahsilatı düzenle" : "Stok ödemesini düzenle";
+    case "cash-delete": return "Kasa kaydını sil";
     case "purchase-payment": return "Stok ödemesini kaydet";
     case "receipt": return "Tahsilatı kaydet";
     case "order-detail": return "Sipariş detayı";
@@ -541,6 +570,31 @@ function EditorBody({ editor, shop, user, busy, save, open }: { editor: Editor; 
       return <LinesForm mode={editor.type} shop={shop} user={user} busy={busy} save={save} addProduct={() => open({ type: "product" })} />;
     case "order-detail":
       return <OrderDetail order={editor.order} users={shop.users} audit={shop.audit} open={open} />;
+    case "cash-payment-edit": {
+      const { payment } = editor;
+      const receipt = payment.kind === "receipt";
+      return <form className="form" onSubmit={event => save(event, "cash-edit", data => ({
+        id: payment.id, kind: payment.kind, date: field(data, "date"), memberId: Number(field(data, "memberId")),
+        amount: receipt ? requiredMoney(field(data, "amount")) : undefined,
+      }))}>
+        <div className="form-totals inline"><span>{payment.description || cashLabels[payment.kind]}</span><strong>{money(Math.abs(payment.amount))}</strong></div>
+        {receipt && <AmountField label="Hesaba geçen tutar (₺)" name="amount" value={moneyInput(payment.amount)} />}
+        <DateField label={receipt ? "Hesaba geçiş tarihi" : "Ödeme tarihi"} value={payment.date} />
+        <MemberField label={receipt ? "Paranın geçtiği hesap" : "Ödeyen"} users={shop.users} defaultId={payment.memberId} name="memberId" />
+        <SaveButton busy={busy} />
+      </form>;
+    }
+    case "cash-delete": {
+      const { entry } = editor;
+      const detail = entry.kind === "receipt" ? "Tahsilat siparişten kaldırılır."
+        : entry.kind === "purchase" ? "Stok alımı yeniden ödeme bekleyenlere döner."
+        : "Kayıt giderler listesinden de kaldırılır.";
+      return <form className="form" onSubmit={event => save(event, "cash-delete", () => ({ id: entry.id, kind: entry.kind }))}>
+        <p>{cashLabels[entry.kind]}{entry.description && " · " + entry.description} · {money(Math.abs(entry.amount))} · {dateLabel(entry.date)}</p>
+        <p className="listing-note">Bu kayıt kasadan silinir. {detail}</p>
+        <div className="actions"><button className="danger" disabled={busy} type="submit">{busy ? "Siliniyor…" : "Silmeyi onayla"}</button></div>
+      </form>;
+    }
     case "purchase-payment":
       return <form className="form" onSubmit={event => save(event, "purchase-payment", data => ({ id: editor.purchase.id, date: field(data, "date"), payerId: Number(field(data, "payerId")) }))}>
         <div className="form-totals inline"><span>{editor.purchase.name}</span><strong>{money(editor.purchase.total)}</strong></div>
@@ -577,16 +631,21 @@ function EditorBody({ editor, shop, user, busy, save, open }: { editor: Editor; 
         <SaveButton busy={busy}>{editor.status === "cancelled" ? "İptali onayla" : "Kaydet"}</SaveButton>
       </form>;
     }
-    case "expense":
-      return <form className="form" onSubmit={event => save(event, "expense", data => ({
-        category: field(data, "category"), amount: requiredMoney(field(data, "amount")), date: field(data, "date"), payerId: Number(field(data, "payerId")), note: field(data, "note").trim() || undefined,
-      }))}>
-        <label>Kategori<select name="category" required>{expenseCategories.map(category => <option key={category}>{category}</option>)}</select></label>
-        <div className="form-row"><AmountField label="Tutar (₺)" name="amount" /><DateField /></div>
-        <MemberField label="Ödeyen" users={shop.users} defaultId={user.id} />
-        <label>Not (isteğe bağlı)<textarea name="note" rows={3} maxLength={500} /></label>
+    case "expense": {
+      const { expense } = editor;
+      const categories = expense && !expenseCategories.includes(expense.category) ? [...expenseCategories, expense.category] : expenseCategories;
+      return <form className="form" onSubmit={event => save(event, expense ? "cash-edit" : "expense", data => {
+        const details = { category: field(data, "category"), amount: requiredMoney(field(data, "amount")), date: field(data, "date"), note: field(data, "note").trim() || undefined };
+        const payerId = Number(field(data, "payerId"));
+        return expense ? { ...details, id: expense.id, kind: "expense", memberId: payerId } : { ...details, payerId };
+      })}>
+        <label>Kategori<select name="category" defaultValue={expense?.category} required>{categories.map(category => <option key={category}>{category}</option>)}</select></label>
+        <div className="form-row"><AmountField label="Tutar (₺)" name="amount" value={expense ? moneyInput(expense.amount) : undefined} /><DateField value={expense?.date} /></div>
+        <MemberField label="Ödeyen" users={shop.users} defaultId={expense?.payerId ?? user.id} />
+        <label>Not (isteğe bağlı)<textarea name="note" defaultValue={expense?.note ?? ""} rows={3} maxLength={500} /></label>
         <SaveButton busy={busy} />
       </form>;
+    }
   }
 }
 function EditorDialog({ editor, shop, user, busy, error, save, open, close }: { editor: Editor; shop: Shop; user: Member; busy: boolean; error: string; save: Save; open: (editor: Editor) => void; close: () => void }) {
@@ -688,7 +747,8 @@ export default function Home() {
       await api(action, body);
       setEditor(null);
       const platform = action === "order" && body && typeof body === "object" && "platform" in body ? body.platform : null;
-      setNotice(platform ? "Satış kaydedildi. " + (platform === "Dolap" ? "Gardrops" : "Dolap") + " ilanındaki ürün adedini kontrol et." : "Kayıt güncellendi.");
+      setNotice(platform ? "Satış kaydedildi. " + (platform === "Dolap" ? "Gardrops" : "Dolap") + " ilanındaki ürün adedini kontrol et."
+        : action === "cash-delete" ? "Kasa kaydı silindi." : "Kayıt güncellendi.");
       await refresh().catch(error => setLoadError(errorMessage(error)));
     } catch (error) {
       if (isUnauthorized(error)) clearSession();

@@ -4,7 +4,7 @@
 
 ## Kurulum ve yayın
 
-1. [Supabase SQL Editor](https://supabase.com/dashboard/projects) üzerinden `supabase/migrations/` klasöründeki SQL dosyalarını tarih sırasıyla birer kez çalıştırın. Alternatif olarak bağlı Supabase projesinde bekleyen geçişleri CLI ile uygulayın. Mevcut kurulumda yeni sürümü yayına almadan önce `20261117004001_platform_list_prices.sql` geçişini uygulayın. Bu geçiş mevcut ürün fiyatını her iki platforma kopyalar.
+1. [Supabase SQL Editor](https://supabase.com/dashboard/projects) üzerinden `supabase/migrations/` klasöründeki SQL dosyalarını tarih sırasıyla birer kez çalıştırın. Alternatif olarak bağlı Supabase projesinde bekleyen geçişleri CLI ile uygulayın. Mevcut kurulumda yeni sürümü yayına almadan önce bekleyen geçişleri uygulayın. Platform fiyatları geçişi mevcut ürün fiyatını her iki platforma kopyalar.
 2. Kaynak dosyaları özel Git deponuza ekleyin. Vercel’de projeyi Next.js olarak içe aktarın ve Node.js 22 veya üstünü seçin.
 3. **Settings → Environment Variables** altında Production için bu değişkenleri ekleyin. Preview ortamında ayrı bir test Supabase projesi kullanın.
 
@@ -25,6 +25,7 @@
 - İptal ayrılan adedi stoğa döndürür. İadede satılabilir adedi her ürün için ayrı girin. Satılabilir sıfır adet stoğu değiştirmez. Diğer platformdaki ilanı manuel kontrol edin.
 - Beklenen tahsilat satış tutarından platform kesintisi düşülerek hesaplanır. Sipariş kârı hesaplanırken satıcıya ait kargo, paketleme ve ürün maliyeti de düşülür. Örneğin 550 TL satış, 40 TL kesinti, 200 TL maliyet ve 10 TL paketleme için beklenen ödeme 510 TL, kâr 300 TL’dir.
 - Kasa hareketi için platform ödemesinin tarihini, gerçek tutarını ve alan hesabı girin. İptal veya iade önceki gerçek tahsilatı silmez. Gerçekleşen ayrı bir iade ödemesini ilgili notla gider olarak kaydedin. İptal ve iadeler aktif satış toplamından çıkar.
+- Kasa ve Giderler ekranından tahsilatları, stok ödemelerini ve genel giderleri düzenleyin veya silin. Bir stok ödemesinin tarihi ve ödeyen hesabı düzenlenebilir. Tahsilatı ya da stok ödemesini silmek, ilgili satış ya da alımın ödeme kaydını kaldırır.
 - Paketleme gideri sipariş kârında hesaba katılır. Gerçek bir paketleme ödemesini genel gider olarak kaydetmek kasayı etkiler. Koli ödemeleri kasa hareketidir ve sipariş kârından ayrıca düşülmez.
 - Raporlarda satış, stok hareketi ve gider için başlangıç ve bitiş tarihini seçip Excel uyumlu CSV alın.
 

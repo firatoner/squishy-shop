@@ -1,7 +1,7 @@
 import { createHash, pbkdf2, randomBytes, timingSafeEqual } from "node:crypto";
 import { promisify } from "node:util";
 
-export type Rpc = <T>(group: "auth" | "write" | "read", data: Record<string, unknown>) => Promise<T>;
+export type Rpc = <T>(group: "auth" | "write" | "read" | "cash_write", data: Record<string, unknown>) => Promise<T>;
 type Environment = { rpc: Rpc; setupToken?: string; secureCookies: boolean };
 type Input = Record<string, unknown>;
 type User = { id: number; name: string; username: string };
@@ -93,6 +93,14 @@ function parsePhoto(value: string) {
   return { bytes: new Uint8Array(image), type: match[1] };
 }
 
+function expenseFields(input: Input) {
+  return {
+    category: strings(input.category, "Gider kategorisi", 80),
+    amount: money(input.amount, "Gider tutarı", 1),
+    note: strings(input.note, "Not", 500, false),
+  };
+}
+
 function mutation(action: string, input: Input) {
   switch (action) {
     case "product": {
@@ -140,8 +148,18 @@ function mutation(action: string, input: Input) {
     case "receipt":
       return { id: id(input.id), date: date(input.date), amount: money(input.amount, "Gelen tutar", 1), recipientId: id(input.recipientId) };
     case "expense":
-      return { category: strings(input.category, "Gider kategorisi", 80), amount: money(input.amount, "Gider tutarı", 1),
-        date: date(input.date), payerId: id(input.payerId), note: strings(input.note, "Not", 500, false) };
+      return { ...expenseFields(input), date: date(input.date), payerId: id(input.payerId) };
+    case "cash-edit":
+    case "cash-delete": {
+      const kind = input.kind;
+      if (kind !== "purchase" && kind !== "receipt" && kind !== "expense") fail("Kasa işlemi türü geçersiz.");
+      const entry = { id: id(input.id), kind };
+      if (action === "cash-delete") return entry;
+      const details = { ...entry, date: date(input.date), memberId: id(input.memberId) };
+      if (kind === "expense") return { ...details, ...expenseFields(input) };
+      if (kind === "receipt") return { ...details, amount: money(input.amount, "Gelen tutar", 1) };
+      return details;
+    }
     default:
       throw new ShopError(404, "İşlem bulunamadı.");
   }
@@ -332,7 +350,8 @@ export async function handleShopRequest(request: Request, action: string, env: E
     }
     if (method === "POST") {
       const p_data = mutation(action, await body(request));
-      return json(await env.rpc("write", { p_action: action, p_actor: session.user.id, p_data }));
+      const group = action === "cash-edit" || action === "cash-delete" ? "cash_write" : "write";
+      return json(await env.rpc(group, { p_action: action, p_actor: session.user.id, p_data }));
     }
     throw new ShopError(404, "İşlem bulunamadı.");
   } catch (error) {
