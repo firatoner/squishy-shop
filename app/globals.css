@@ -110,6 +110,7 @@ dialog::backdrop { background: #381a335d; }
 .auth-card h1 { font-size: 40px; }
 .auth-card .form button { justify-self: start; }
 .table-wrap { overflow-x: auto; }
+.period-comparison td:not(:first-child) { white-space: nowrap; }
 .chart-grid { display: grid; grid-template-columns: repeat(auto-fit,minmax(min(100%,320px),1fr)); gap: 16px; }
 .chart-bars { display: grid; gap: 12px; margin: 16px 0; }
 .chart-row { display: grid; grid-template-columns: minmax(76px,1fr) minmax(64px,2fr) minmax(72px,auto); gap: 10px; align-items: center; font-size: 12px; }

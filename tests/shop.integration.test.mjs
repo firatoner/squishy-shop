@@ -397,6 +397,38 @@ test("Two members track inventory, sales, supplier payments, and expenses", asyn
   await ok(mert("cash-edit", { id: roundedPurchaseId, kind: "purchase", date, memberId: mertId }));
   assert.equal((await state()).purchases.find(purchase => purchase.id === roundedPurchaseId).payerId, mertId);
 
+  const historyState = await state();
+  assert.deepEqual(historyState.productHistory.filter(entry => entry.productId === productId && entry.kind === "price").map(entry => entry.dolapPrice).sort(), [60000, 65000]);
+  assert.ok(historyState.productHistory.some(entry => entry.purchaseId === editedPurchaseId && entry.kind === "cost" && entry.unitCost === 800));
+  assert.ok(historyState.productHistory.some(entry => entry.purchaseId === editedPurchaseId && entry.kind === "cost" && entry.unitCost === 1000));
+  const deleteProduct = (await ok(mert("product", { name: "Delete stock", dolapListPrice: 1000, gardropsListPrice: 1000, lowThreshold: 0 }))).id;
+  await ok(mert("purchase", { name: "Deletion test stock", date, total: 1000,
+    lines: [{ productId: deleteProduct, quantity: 10, unitCost: 100, firstPartnerShare: 50 }] }));
+  for (const material of (await state()).packagingMaterials) {
+    await ok(mert("packaging-move", { id: material.id, date, direction: "in", quantity: 20 }));
+  }
+  for (const status of ["pending", "packed", "cancelled", "returned"]) {
+    const beforeDeleteOrder = await state();
+    const saleId = (await ok(mert("order", { date, platform: "Dolap", reference: "DELETE-" + status, saleTotal: 2000, netAfterShipping: 1800, packing: 100,
+      lines: [{ productId: deleteProduct, quantity: 2 }] }))).id;
+    await ok(mert("receipt", { id: saleId, date, amount: 1800, recipientId: mertId }));
+    if (status !== "pending") await ok(mert("order-status", { id: saleId, date, status: "packed" }));
+    if (status === "returned") await ok(mert("order-status", { id: saleId, date, status, returns: [{ productId: deleteProduct, quantity: 1 }] }));
+    if (status === "cancelled") await ok(mert("order-status", { id: saleId, date, status }));
+    const toDelete = (await state()).orders.find(order => order.id === saleId);
+    assert.equal((await client()("order-delete", { id: saleId, revision: toDelete.revision })).status, 401);
+    assert.equal((await mert("order-delete", { id: saleId, revision: toDelete.revision + 1 })).status, 409);
+    await ok(ayse("order-delete", { id: saleId, revision: toDelete.revision }));
+    const afterDeleteOrder = await state();
+    assert.equal(afterDeleteOrder.orders.some(order => order.id === saleId), false);
+    assert.equal(afterDeleteOrder.cash.some(entry => entry.kind === "receipt" && entry.id === saleId), false);
+    assert.equal(afterDeleteOrder.products.find(product => product.id === deleteProduct).stock, 10);
+    assert.equal(afterDeleteOrder.summary.cashBalance, beforeDeleteOrder.summary.cashBalance);
+    assert.deepEqual(afterDeleteOrder.packagingMaterials.map(material => material.quantity), beforeDeleteOrder.packagingMaterials.map(material => material.quantity));
+    assert.equal(afterDeleteOrder.packagingMovements.some(move => move.orderId === saleId), false);
+    assert.equal((await ayse("order-delete", { id: saleId, revision: toDelete.revision })).status, 404);
+  }
+
   await ok(mert("logout", {}));
   assert.equal((await ok(mert("session"))).user, null);
   assert.equal((await mert("state")).status, 401);

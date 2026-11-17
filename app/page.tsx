@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNod
 import { Activity, Archive, BarChart3, Boxes, CalendarDays, Check, Download, Heart, House, LogOut, Plus, Receipt, Settings, ShoppingBag, Sparkles, Users, Wallet, X } from "lucide-react";
 import { calculatePartnership, type PartnerTransfer, type PurchasePayment, type StockLoss } from "@/lib/shop-partnership";
 import { calculatePerformance, comparePlatforms, restockSuggestions, performanceTrend } from "@/lib/shop-performance";
+import { boughtTogether, tiedCapital, purchaseRecovery, previousPeriod, periodSummary } from "@/lib/shop-analytics";
 
 type Member = { id: number; username: string; name: string };
 type Session = { user: Member | null; needsSetup: boolean };
@@ -39,19 +40,22 @@ type Shop = {
   stockLosses: StockLoss[];
   packagingMaterials: PackagingMaterial[];
   packagingMovements: { id: number; materialId: number; date: string; quantity: number; orderId: number | null; note: string }[];
+  productHistory: { id: number; productId: number; kind: "price" | "cost"; source: "baseline" | "recorded"; date: string; recordedAt: string;
+    dolapPrice: number | null; gardropsPrice: number | null; unitCost: number | null; quantity: number | null; purchaseId: number | null }[];
   summary: { month: string; gross: number; collected: number; profit: number; cashBalance: number };
 };
 type PackagingMaterial = { id: number; name: string; quantity: number; lowThreshold: number; perOrder: number; revision: number };
-type PageName = "dashboard" | "products" | "orders" | "stock" | "cash" | "partners" | "performance" | "platforms" | "restock" | "packaging" | "reports" | "settings";
+type PageName = "dashboard" | "products" | "orders" | "stock" | "cash" | "partners" | "performance" | "analytics" | "platforms" | "restock" | "packaging" | "reports" | "settings";
 type Editor =
   | { type: "product"; product?: Product }
+  | { type: "product-history"; product: Product }
   | { type: "purchase" | "order" }
   | { type: "expense"; expense?: Expense }
   | { type: "cash-payment-edit"; payment: Cash }
   | { type: "cash-delete"; entry: CashEntry }
   | { type: "purchase-payment"; purchase: Purchase }
   | { type: "purchase-edit"; purchase: Purchase }
-  | { type: "receipt" | "order-detail" | "order-edit"; order: Order }
+  | { type: "receipt" | "order-detail" | "order-edit" | "order-delete"; order: Order }
   | { type: "order-share"; order: Order; productId: number; lotId: number; productName: string }
   | { type: "partner-transfer"; senderId?: number; amount?: number }
   | { type: "partner-transfer-delete"; transfer: PartnerTransfer }
@@ -70,6 +74,7 @@ const sections = [
   { id: "cash", label: "Kasa ve Giderler", Icon: Wallet },
   { id: "partners", label: "Ortaklar", Icon: Users },
   { id: "performance", label: "Ürün Performansı", Icon: BarChart3 },
+  { id: "analytics", label: "İş Analizleri", Icon: Activity },
   { id: "platforms", label: "Platform Karşılaştırması", Icon: ShoppingBag },
   { id: "restock", label: "Stok Yenileme", Icon: Boxes },
   { id: "packaging", label: "Ambalaj Stoku", Icon: Archive },
@@ -168,6 +173,7 @@ function OrderActions({ order, open, compact = false }: { order: Order; open: (e
     {!compact && active && <button className="danger" onClick={() => open({ type: "order-status", order, status: "cancelled" })}>İptal et</button>}
     {!compact && order.status === "packed" && <button className="danger" onClick={() => open({ type: "order-status", order, status: "returned" })}>İade kaydet</button>}
     <button onClick={() => open({ type: "order-detail", order })}>Detay</button>
+    {!compact && <button className="danger" onClick={() => open({ type: "order-delete", order })}>Sil</button>}
   </div>;
 }
 function OrderRow({ order, open, compact = false }: { order: Order; open: (editor: Editor) => void; compact?: boolean }) {
@@ -242,7 +248,8 @@ function Products({ products, open }: { products: Product[]; open: (editor: Edit
         <div className="inline"><span>Dolap</span><strong>{money(product.dolapListPrice)}</strong></div>
         <div className="inline"><span>Gardrops</span><strong>{money(product.gardropsListPrice)}</strong></div>
         <p className="subtle">Düşük stok eşiği {product.lowThreshold}</p>
-        <button onClick={() => open({ type: "product", product })}>Düzenle</button>
+        <div className="actions"><button onClick={() => open({ type: "product", product })}>Düzenle</button>
+          <button onClick={() => open({ type: "product-history", product })}>Fiyat / Maliyet Geçmişi</button></div>
       </div>
     </article>)}</div> : <Empty>{products.length ? "Aramana uygun ürün bulunamadı." : "Henüz ürün kaydı yok. İlk ürünü ekleyerek başlayabilirsin."}</Empty>}
   </>;
@@ -533,6 +540,109 @@ function RestockPage({ data }: { data: Shop }) {
       </Panel> : <p className="form-error" role="alert">Gün sayılarını 1–365 arasında tam sayı olarak gir.</p>}
     </div>
   </>;
+}
+function BusinessAnalyticsPage({ data }: { data: Shop }) {
+  const [view, setView] = useState("pairs");
+  const [from, setFrom] = useState(data.summary.month + "-01");
+  const [through, setThrough] = useState(today);
+  const valid = from !== "" && through !== "" && from <= through;
+  const datesNeeded = view === "pairs" || view === "period";
+  const pairs = view === "pairs" && valid ? boughtTogether(data, from, through) : [];
+  const capital = view === "capital" ? tiedCapital(data, today()) : [];
+  const recovery = view === "recovery" ? purchaseRecovery(data) : [];
+  const previous = valid ? previousPeriod(from, through) : null;
+  const currentFigures = view === "period" && valid ? periodSummary(data, from, through) : null;
+  const previousFigures = view === "period" && previous ? periodSummary(data, previous.from, previous.through) : null;
+  const percentage = (value: number) => "%" + value.toLocaleString("tr-TR", { maximumFractionDigits: 1 });
+  const comparisonMetrics: { key: keyof ReturnType<typeof periodSummary>; label: string; format: (value: number) => string }[] = [
+    { key: "orders", label: "Aktif sipariş", format: String }, { key: "quantity", label: "Satılan adet", format: String },
+    { key: "gross", label: "Satış toplamı", format: money }, { key: "profit", label: "Net sonuç", format: money },
+    { key: "collected", label: "Gelen tahsilat", format: money }, { key: "averageBasket", label: "Ortalama sepet", format: money },
+    { key: "lossCost", label: "Hasar/kayıp maliyeti", format: money }, { key: "returns", label: "İade sipariş", format: String },
+    { key: "returnRate", label: "İade oranı", format: percentage }, { key: "cancelled", label: "İptal sipariş", format: String },
+  ];
+  return <>
+    <SectionHeader title="İş Analizleri" description="Ürünlerin birlikte satışını, stok yatırımını ve dönem sonuçlarını incele." />
+    <div className="stack">
+      <div className="form"><label>Analiz<select value={view} onChange={event => setView(event.target.value)}>
+        <option value="pairs">Birlikte satılan ürünler</option><option value="capital">Stokta bağlı para</option>
+        <option value="recovery">Alımın geri dönüşü</option><option value="period">Dönem karşılaştırması</option>
+      </select></label></div>
+      {datesNeeded && <div className="form form-row">
+        <label>Başlangıç<input type="date" min="1900-01-01" value={from} onChange={event => setFrom(event.target.value)} /></label>
+        <label>Bitiş<input type="date" min="1900-01-01" value={through} onChange={event => setThrough(event.target.value)} /></label>
+      </div>}
+      {datesNeeded && !valid ? <p className="form-error" role="alert">Geçerli bir başlangıç ve bitiş tarihi seç.</p> : <>
+        {view === "pairs" && <Panel title="Birlikte satılan ürünler">
+          <p className="subtle">Her ürün çifti aynı siparişte bir kez sayılır. Oran, dönemdeki aktif siparişler içindeki payıdır.</p>
+          {pairs.length ? <Table headers={["İlk ürün", "Birlikte alınan ürün", "Sipariş sayısı", "Siparişlerdeki pay"]}
+            rows={pairs.map(pair => [pair.firstName, pair.secondName, pair.orders, percentage(pair.share)])} />
+            : <Empty>Bu dönemde birlikte satılmış farklı ürün yok.</Empty>}
+        </Panel>}
+        {view === "capital" && <Panel title="Stokta bağlı para" meta={<strong>{money(capital.reduce((sum, row) => sum + row.value, 0))}</strong>}>
+          <p className="subtle">Bugünkü kalan adetler alış maliyetleriyle değerlenir. Ödenmiş stok kısmı {money(capital.reduce((sum, row) => sum + row.paidValue, 0))}.</p>
+          {capital.length ? <>
+            <ChartBars values={capital.slice(0, 8).map(row => ({ label: row.name, value: row.value }))} format={money} />
+            <Table headers={["Ürün", "Kalan adet", "Bağlı maliyet", "Ödenmiş kısmı", "En eski stok"]}
+              rows={capital.map(row => [row.name, row.quantity, money(row.value), money(row.paidValue), row.days + " gün"])} />
+          </> : <Empty>Stokta bekleyen ürün yok.</Empty>}
+        </Panel>}
+        {view === "recovery" && <Panel title="Alımın geri dönüşü">
+          <p className="subtle">Tüm kayıtlı satışlarda geri dönen net tahsilat, alımların ödenen tutarıyla karşılaştırılır. Ayrı girilen kargo ve paketleme tahsilattan düşülür. Sipariş tutarı ürünlere satış değerleri oranında dağıtılır.</p>
+          {recovery.length ? <Table headers={["Alım", "Toplam maliyet", "Ödenen", "Satılan adet", "Geri dönen net", "Geri dönüş", "Kalan geri dönüş hedefi", "Stoktaki maliyet", "Hasar/kayıp"]}
+            rows={recovery.map(row => [row.name, money(row.total), money(row.paid), row.soldQuantity, money(row.collectedNet),
+              row.recoveryRate === null ? "Ödeme bekliyor" : percentage(row.recoveryRate), money(row.remainingToRecover), money(row.remainingStock), money(row.lossCost)])} />
+            : <Empty>Henüz stok alımı yok.</Empty>}
+        </Panel>}
+        {view === "period" && currentFigures && previousFigures && previous && <Panel title="Dönem karşılaştırması">
+          <p>{dateLabel(from)} – {dateLabel(through)}</p>
+          <p className="subtle">Önceki eşit uzunluktaki dönem {dateLabel(previous.from)} – {dateLabel(previous.through)}. Net sonuç hasar/kayıp maliyetini içerir.</p>
+          <div className="period-comparison"><Table headers={["Ölçüm", "Seçilen dönem", "Önceki dönem", "Fark", "Değişim"]}
+            rows={comparisonMetrics.map(metric => {
+              const current = currentFigures[metric.key];
+              const before = previousFigures[metric.key];
+              const difference = current - before;
+              const change = metric.key === "returnRate" ? difference.toLocaleString("tr-TR", { maximumFractionDigits: 1 }) + " puan"
+                : before === 0 ? current === 0 ? "—" : "Yeni" : percentage(difference / Math.abs(before) * 100);
+              return [metric.label, metric.format(current), metric.format(before), (difference > 0 ? "+" : "") + metric.format(difference), change];
+            })} /></div>
+        </Panel>}
+      </>}
+    </div>
+  </>;
+}
+function ProductHistory({ product, data }: { product: Product; data: Shop }) {
+  const history = (data.productHistory ?? []).filter(entry => entry.productId === product.id);
+  const prices = history.filter(entry => entry.kind === "price");
+  const costs = history.filter(entry => entry.kind === "cost");
+  const sales = data.orders.filter(order => order.status === "pending" || order.status === "packed").flatMap(order =>
+    order.lines.filter(line => line.productId === product.id).map(line => ({ order, line })));
+  return <div className="stack">
+    <p>{product.name}</p>
+    <p className="subtle">Geçmiş mevcut değerlerden başlar. Yeni fiyat değişiklikleri ve alım maliyetleri bundan sonra kaydedilir. Başlangıç kayıtları geçişteki değerleri gösterir.</p>
+    <Panel title="Liste fiyatı geçmişi">
+      {prices.length ? <>
+        <ChartBars values={prices.slice(0, 6).reverse().flatMap(entry => [
+          { label: dateLabel(entry.date) + " · Dolap", value: entry.dolapPrice ?? 0 },
+          { label: dateLabel(entry.date) + " · Gardrops", value: entry.gardropsPrice ?? 0 },
+        ])} format={money} />
+        <Table headers={["Tarih", "Dolap", "Gardrops", "Kayıt"]} rows={prices.map(entry => [
+          dateLabel(entry.date), money(entry.dolapPrice ?? 0), money(entry.gardropsPrice ?? 0), entry.source === "baseline" ? "Başlangıç" : "Kaydedildi",
+        ])} />
+      </> : <Empty>Fiyat geçmişi henüz oluşmadı.</Empty>}
+    </Panel>
+    <Panel title="Alış maliyeti geçmişi">
+      {costs.length ? <Table headers={["Tarih", "Alım", "Adet", "Birim maliyet", "Kayıt"]} rows={costs.map(entry => [
+        dateLabel(entry.date), data.purchases.find(purchase => purchase.id === entry.purchaseId)?.name ?? "—",
+        entry.quantity, money(entry.unitCost ?? 0), entry.source === "baseline" ? "Başlangıç" : "Kaydedildi",
+      ])} /> : <Empty>Henüz alış maliyeti kaydı yok.</Empty>}
+    </Panel>
+    <Panel title="Anlaşılan satış fiyatları">
+      {sales.length ? <Table headers={["Tarih", "Platform", "Adet", "Birim satış fiyatı"]} rows={sales.map(({ order, line }) => [
+        dateLabel(order.date), order.platform, line.quantity, money(line.agreedPrice),
+      ])} /> : <Empty>Henüz aktif satış kaydı yok.</Empty>}
+    </Panel>
+  </div>;
 }
 function PackagingPage({ data, open }: { data: Shop; open: (editor: Editor) => void }) {
   const materials = data.packagingMaterials ?? [];
@@ -957,10 +1067,12 @@ function OrderDetail({ order, users, audit, open }: { order: Order; users: Membe
 function getTitle(editor: Editor) {
   switch (editor.type) {
     case "product": return editor.product ? "Ürünü düzenle" : "Ürün ekle";
+    case "product-history": return "Fiyat ve maliyet geçmişi";
     case "purchase": return "Stok alımı ekle";
     case "purchase-edit": return "Stok alımını düzenle";
     case "order": return "Satış ekle";
     case "order-edit": return "Satışı düzenle";
+    case "order-delete": return "Satışı sil";
     case "expense": return editor.expense ? "Gideri düzenle" : "Gider ekle";
     case "cash-payment-edit": return editor.payment.kind === "receipt" ? "Tahsilatı düzenle" : "Stok ödemesini düzenle";
     case "cash-delete": return "Kasa kaydını sil";
@@ -982,6 +1094,8 @@ function EditorBody({ editor, shop, user, busy, save, open }: { editor: Editor; 
   switch (editor.type) {
     case "product":
       return <ProductForm product={editor.product} busy={busy} save={save} />;
+    case "product-history":
+      return <ProductHistory product={editor.product} data={shop} />;
     case "purchase":
     case "order":
       return <LinesForm mode={editor.type} shop={shop} user={user} busy={busy} save={save} addProduct={() => open({ type: "product" })} />;
@@ -991,6 +1105,13 @@ function EditorBody({ editor, shop, user, busy, save, open }: { editor: Editor; 
       return <LinesForm mode="order" orderToEdit={editor.order} shop={shop} user={user} busy={busy} save={save} addProduct={() => open({ type: "product" })} />;
     case "order-detail":
       return <OrderDetail order={editor.order} users={shop.users} audit={shop.audit} open={open} />;
+    case "order-delete":
+      return <form className="form" onSubmit={event => save(event, "order-delete", () => ({ id: editor.order.id, revision: editor.order.revision }))}>
+        <p>{editor.order.platform} · {editor.order.reference || "#" + editor.order.id} · {money(editor.order.gross)}</p>
+        <p className="listing-note">Bu satış ve bağlı tahsilat kaydı silinecek. Satış nedeniyle stoktan çıkan ürünler ve bu siparişte kullanılan ambalaj malzemeleri geri eklenecek.</p>
+        {editor.order.receiptDate && <p>Kasadan kaldırılacak tahsilat {money(editor.order.receiptAmount ?? 0)}.</p>}
+        <div className="actions"><button className="danger" disabled={busy} type="submit">{busy ? "Siliniyor…" : "Satışı silmeyi onayla"}</button></div>
+      </form>;
     case "settings":
       return <form className="form" onSubmit={event => save(event, "settings", data => ({
         defaultPacking: requiredMoney(field(data, "defaultPacking")),
@@ -1173,6 +1294,7 @@ function visiblePage(page: PageName, shop: Shop, open: (editor: Editor) => void)
     case "cash": return <CashPage data={shop} open={open} />;
     case "partners": return <PartnersPage data={shop} open={open} />;
     case "performance": return <PerformancePage data={shop} />;
+    case "analytics": return <BusinessAnalyticsPage data={shop} />;
     case "platforms": return <PlatformsPage data={shop} />;
     case "restock": return <RestockPage data={shop} />;
     case "packaging": return <PackagingPage data={shop} open={open} />;
@@ -1257,7 +1379,7 @@ export default function Home() {
       setEditor(null);
       const platform = action === "order" && body && typeof body === "object" && "platform" in body ? body.platform : null;
       setNotice(platform ? "Satış kaydedildi. " + (platform === "Dolap" ? "Gardrops" : "Dolap") + " ilanındaki ürün adedini kontrol et."
-        : action === "cash-delete" ? "Kasa kaydı silindi." : "Kayıt güncellendi.");
+        : action === "cash-delete" ? "Kasa kaydı silindi." : action === "order-delete" ? "Satış kaydı silindi." : "Kayıt güncellendi.");
       await refresh().catch(error => setLoadError(errorMessage(error)));
     } catch (error) {
       if (isUnauthorized(error)) clearSession();

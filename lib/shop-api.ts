@@ -1,7 +1,7 @@
 import { createHash, pbkdf2, randomBytes, timingSafeEqual } from "node:crypto";
 import { promisify } from "node:util";
 
-export type Rpc = <T>(group: "auth" | "write" | "read" | "cash_write" | "partnership_write" | "settings_write" | "stock_write" | "inventory_write", data: Record<string, unknown>) => Promise<T>;
+export type Rpc = <T>(group: "auth" | "write" | "read" | "cash_write" | "partnership_write" | "settings_write" | "stock_write" | "inventory_write" | "order_delete", data: Record<string, unknown>) => Promise<T>;
 type Environment = { rpc: Rpc; setupToken?: string; secureCookies: boolean };
 type Input = Record<string, unknown>;
 type User = { id: number; name: string; username: string };
@@ -198,6 +198,8 @@ function mutation(action: string, input: Input) {
         uniqueProducts(list(input.returns, (line) => ({ productId: id(line.productId), quantity: quantity(line.quantity) }), 0));
       return { id: id(input.id), status, date: date(input.date), sellable: input.sellable, returns };
     }
+    case "order-delete":
+      return { id: id(input.id), revision: integer(input.revision, "Kayıt sürümü", 0, 2_147_483_647) };
     case "receipt":
       return { id: id(input.id), date: date(input.date), amount: money(input.amount, "Gelen tutar", 1), recipientId: id(input.recipientId) };
     case "order-share":
@@ -424,6 +426,7 @@ export async function handleShopRequest(request: Request, action: string, env: E
         : action === "settings" ? "settings_write"
         : action === "purchase-edit" ? "stock_write"
         : ["purchase-payment", "purchase-payment-edit", "stock-loss", "stock-loss-delete", "packaging-material", "packaging-move"].includes(action) ? "inventory_write"
+        : action === "order-delete" ? "order_delete"
         : "write";
       return json(await env.rpc(group, { p_action: action, p_actor: session.user.id, p_data }));
     }

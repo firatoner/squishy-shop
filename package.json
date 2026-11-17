@@ -9,7 +9,7 @@
     "build": "next build",
     "start": "next start",
     "typecheck": "tsc --noEmit",
-    "test": "node --experimental-strip-types --test tests/shop-api.test.mjs tests/shop-partnership.test.mjs",
+    "test": "node --experimental-strip-types --test tests/shop-api.test.mjs tests/shop-partnership.test.mjs tests/shop-analytics.test.mjs",
     "test:api": "node --experimental-strip-types --test tests/shop-api.test.mjs",
     "test:integration": "node --test tests/shop.integration.test.mjs"
   },

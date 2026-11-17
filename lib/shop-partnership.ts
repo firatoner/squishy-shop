@@ -45,7 +45,7 @@ function roundedRatio(amount: number, numerator: number, denominator: number) {
   return Math.sign(amount) * Number((absolute + divisor / 2n) / divisor);
 }
 
-function allocate(amount: number, weights: number[]) {
+export function allocate(amount: number, weights: number[]) {
   const total = weights.reduce((sum, weight) => sum + weight, 0);
   let weightSum = 0;
   let allocated = 0;
