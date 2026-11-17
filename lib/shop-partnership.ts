@@ -2,6 +2,7 @@ type SaleLine = {
   productId: number;
   productName: string;
   purchaseId: number;
+  lotId?: number;
   quantity: number;
   agreedPrice: number;
   unitCost: number;
@@ -53,11 +54,12 @@ function allocate(amount: number, weights: number[]) {
 }
 
 function productGroups(lines: SaleLine[]) {
-  const groups = new Map<number, SaleLine[]>();
+  const groups = new Map<string, SaleLine[]>();
   for (const line of lines) {
-    const group = groups.get(line.productId);
+    const key = line.productId + ":" + line.firstPartnerShare;
+    const group = groups.get(key);
     if (group) group.push(line);
-    else groups.set(line.productId, [line]);
+    else groups.set(key, [line]);
   }
   return [...groups.values()].map(group => {
     const [product] = group;
@@ -85,7 +87,7 @@ export function calculatePartnership(data: PartnershipData, from: string, throug
     };
   });
   const purchaseById = new Map(data.purchases.map(purchase => [purchase.id, purchase]));
-  const products = new Map<number, { name: string; quantity: number; profit: number; firstProfit: number; secondProfit: number; unassigned: number }>();
+  const products = new Map<number, { productId: number; name: string; quantity: number; gross: number; profit: number; firstProfit: number; secondProfit: number; unassigned: number }>();
   const missingShares = new Set<number>();
   const awaitingStockPayments = new Set<number>();
   let excludedReceipts = 0;
@@ -109,9 +111,10 @@ export function calculatePartnership(data: PartnershipData, from: string, throug
         : groups.reduce((sum, group) => sum + group.gross, 0) - order.netAfterShipping;
       const fees = allocate(deductions + order.packing, weights);
       groups.forEach((group, i) => {
-        const product = products.get(group.productId) ?? { name: group.productName, quantity: 0, profit: 0, firstProfit: 0, secondProfit: 0, unassigned: 0 };
+        const product = products.get(group.productId) ?? { productId: group.productId, name: group.productName, quantity: 0, gross: 0, profit: 0, firstProfit: 0, secondProfit: 0, unassigned: 0 };
         const profit = group.gross - fees[i] - group.cost;
         product.quantity += group.quantity;
+        product.gross += group.gross;
         product.profit += profit;
         if (group.share === null) product.unassigned += 1;
         else {

@@ -129,6 +129,7 @@ function mutation(action: string, input: Input) {
       const lines = list(input.lines, line => ({
         productId: id(line.productId), quantity: quantity(line.quantity), unitCost: money(line.unitCost, "Birim maliyet"),
         lotId: action === "purchase-edit" && line.lotId !== undefined ? id(line.lotId) : undefined,
+        firstPartnerShare: line.firstPartnerShare === undefined ? undefined : partnerShare(line.firstPartnerShare),
       }));
       const total = money(input.total, "Koli toplamı", 1);
       if (lines.reduce((sum, line) => sum + line.quantity * line.unitCost, 0) !== total) fail("Ürün maliyetleri koli toplamıyla eşleşmeli.");
@@ -144,7 +145,8 @@ function mutation(action: string, input: Input) {
     }
     case "purchase-payment":
       return { id: id(input.id), date: date(input.date), payerId: id(input.payerId) };
-    case "order": {
+    case "order":
+    case "order-edit": {
       const platform = input.platform;
       if (platform !== "Dolap" && platform !== "Gardrops") fail("Dolap veya Gardrops seçin.");
       const saleTotal = input.saleTotal === undefined ? undefined : money(input.saleTotal, "Toplam satış tutarı");
@@ -157,6 +159,8 @@ function mutation(action: string, input: Input) {
         : integer(input.netAfterShipping, "Kargo ve kesinti sonrası net tutar", -100_000_000, 100_000_000);
       if (netAfterShipping !== undefined && netAfterShipping > gross) fail("Net tutar satış toplamını aşamaz.");
       return { platform, date: date(input.date), reference: strings(input.reference, "Sipariş numarası", 120, false), lines, saleTotal, netAfterShipping,
+        id: action === "order-edit" ? id(input.id) : undefined,
+        revision: action === "order-edit" ? integer(input.revision, "Kayıt sürümü", 0, 2_147_483_647) : undefined,
         platformFee: netAfterShipping === undefined ? money(input.platformFee, "Platform kesintisi") : 0,
         shipping: netAfterShipping === undefined ? money(input.shipping, "Kargo") : 0,
         packing: money(input.packing, "Paketleme") };
@@ -172,7 +176,8 @@ function mutation(action: string, input: Input) {
     case "receipt":
       return { id: id(input.id), date: date(input.date), amount: money(input.amount, "Gelen tutar", 1), recipientId: id(input.recipientId) };
     case "order-share":
-      return { id: id(input.id), productId: id(input.productId), firstPartnerShare: partnerShare(input.firstPartnerShare) };
+      return { id: id(input.id), productId: id(input.productId), lotId: input.lotId === undefined ? undefined : id(input.lotId),
+        firstPartnerShare: partnerShare(input.firstPartnerShare) };
     case "partner-transfer": {
       const senderId = id(input.senderId);
       const recipientId = id(input.recipientId);

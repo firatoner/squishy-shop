@@ -1,8 +1,9 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
-import { Activity, Archive, Boxes, CalendarDays, Check, Download, Heart, House, LogOut, Plus, Receipt, Settings, ShoppingBag, Sparkles, Users, Wallet, X } from "lucide-react";
+import { Activity, Archive, BarChart3, Boxes, CalendarDays, Check, Download, Heart, House, LogOut, Plus, Receipt, Settings, ShoppingBag, Sparkles, Users, Wallet, X } from "lucide-react";
 import { calculatePartnership, type PartnerTransfer } from "@/lib/shop-partnership";
+import { calculatePerformance } from "@/lib/shop-performance";
 
 type Member = { id: number; username: string; name: string };
 type Session = { user: Member | null; needsSetup: boolean };
@@ -12,16 +13,16 @@ type Purchase = {
   id: number; name: string; date: string; total: number; actorId: number; revision: number;
   paymentDate: string | null; payerId: number | null;
   lines: { lotId: number; productId: number; productName: string; quantity: number; unitCost: number;
-    usedQuantity: number; hasSalesHistory: boolean }[];
+    usedQuantity: number; hasSalesHistory: boolean; firstPartnerShare: number | null }[];
 };
 type OrderStatus = "pending" | "packed" | "cancelled" | "returned";
 type Order = {
-  id: number; platform: Platform; reference: string | null; date: string; status: OrderStatus;
+  id: number; revision: number; platform: Platform; reference: string | null; date: string; status: OrderStatus;
   gross: number; discount: number; platformFee: number; shipping: number; packing: number; cost: number;
   netAfterShipping?: number | null;
   expectedReceipt: number; profit: number; actorId: number; receiptDate: string | null; receiptAmount: number | null;
   recipientId: number | null; returnSellable?: boolean | null; returnLines?: { productId: number; quantity: number }[];
-  lines: { productId: number; productName: string; purchaseId: number; quantity: number; listPrice: number; agreedPrice: number;
+  lines: { productId: number; productName: string; purchaseId: number; lotId: number; quantity: number; listPrice: number; agreedPrice: number;
     unitCost: number; cost?: number; firstPartnerShare: number | null }[];
 };
 type Expense = { id: number; category: string; amount: number; date: string; payerId: number; actorId: number; note: string | null; firstPartnerShare: number | null };
@@ -36,7 +37,7 @@ type Shop = {
   settings: { defaultPacking: number };
   summary: { month: string; gross: number; collected: number; profit: number; cashBalance: number };
 };
-type PageName = "dashboard" | "products" | "orders" | "stock" | "cash" | "partners" | "reports" | "settings";
+type PageName = "dashboard" | "products" | "orders" | "stock" | "cash" | "partners" | "performance" | "reports" | "settings";
 type Editor =
   | { type: "product"; product?: Product }
   | { type: "purchase" | "order" }
@@ -45,8 +46,8 @@ type Editor =
   | { type: "cash-delete"; entry: CashEntry }
   | { type: "purchase-payment"; purchase: Purchase }
   | { type: "purchase-edit"; purchase: Purchase }
-  | { type: "receipt" | "order-detail"; order: Order }
-  | { type: "order-share"; order: Order; productId: number; productName: string }
+  | { type: "receipt" | "order-detail" | "order-edit"; order: Order }
+  | { type: "order-share"; order: Order; productId: number; lotId: number; productName: string }
   | { type: "partner-transfer"; senderId?: number; amount?: number }
   | { type: "partner-transfer-delete"; transfer: PartnerTransfer }
   | { type: "settings"; defaultPacking: number }
@@ -59,6 +60,7 @@ const sections = [
   { id: "stock", label: "Stok", Icon: Boxes },
   { id: "cash", label: "Kasa ve Giderler", Icon: Wallet },
   { id: "partners", label: "Ortaklar", Icon: Users },
+  { id: "performance", label: "Ürün Performansı", Icon: BarChart3 },
   { id: "reports", label: "Raporlar", Icon: Download },
   { id: "settings", label: "Ayarlar", Icon: Settings },
 ] as const;
@@ -150,6 +152,7 @@ function OrderActions({ order, open, compact = false }: { order: Order; open: (e
   return <div className="actions">
     {order.status === "pending" && <button className="primary" onClick={() => open({ type: "order-status", order, status: "packed" })}>Paketlendi</button>}
     {!compact && active && order.receiptDate === null && <button onClick={() => open({ type: "receipt", order })}>Tahsilat gir</button>}
+    {!compact && active && <button onClick={() => open({ type: "order-edit", order })}>Düzenle</button>}
     {!compact && active && <button className="danger" onClick={() => open({ type: "order-status", order, status: "cancelled" })}>İptal et</button>}
     {!compact && order.status === "packed" && <button className="danger" onClick={() => open({ type: "order-status", order, status: "returned" })}>İade kaydet</button>}
     <button onClick={() => open({ type: "order-detail", order })}>Detay</button>
@@ -213,7 +216,7 @@ function Dashboard({ data, open }: { data: Shop; open: (editor: Editor) => void 
     </div>
   </>;
 }
-function Products({ products, users, open }: { products: Product[]; users: Member[]; open: (editor: Editor) => void }) {
+function Products({ products, open }: { products: Product[]; open: (editor: Editor) => void }) {
   const [query, setQuery] = useState("");
   const shown = products.filter(product => product.name.toLocaleLowerCase("tr-TR").includes(query.toLocaleLowerCase("tr-TR").trim()));
   return <>
@@ -226,7 +229,6 @@ function Products({ products, users, open }: { products: Product[]; users: Membe
         <div className="inline"><h3>{product.name}</h3><span className={"pill " + (product.stock <= product.lowThreshold ? "warning" : "ok")}>{product.stock} adet</span></div>
         <div className="inline"><span>Dolap</span><strong>{money(product.dolapListPrice)}</strong></div>
         <div className="inline"><span>Gardrops</span><strong>{money(product.gardropsListPrice)}</strong></div>
-        <p className="subtle">{product.firstPartnerShare == null ? "Ortaklık payı girilmedi" : shareLabel(users, product.firstPartnerShare)}</p>
         <p className="subtle">Düşük stok eşiği {product.lowThreshold}</p>
         <button onClick={() => open({ type: "product", product })}>Düzenle</button>
       </div>
@@ -261,8 +263,9 @@ function StockPage({ data, open }: { data: Shop; open: (editor: Editor) => void 
       <Panel title="Toptan alımlar">{data.purchases.length ? <div className="list">{data.purchases.map(purchase =>
         <details className="purchase-details" key={purchase.id}>
           <summary><span><strong>{purchase.name}</strong><br /><span className="subtle">{dateLabel(purchase.date)} · {money(purchase.total)}</span></span><span className={"pill " + (purchase.paymentDate ? "ok" : "warning")}>{purchase.paymentDate ? "Ödendi" : "Ödeme bekliyor"}</span></summary>
-          <Table headers={["Ürün", "Alınan adet", "Kalan adet", "Birim maliyet", "Toplam"]} rows={purchase.lines.map(line => [
+          <Table headers={["Ürün", "Alınan adet", "Kalan adet", "Birim maliyet", "Toplam", "Kâr payı"]} rows={purchase.lines.map(line => [
             line.productName, line.quantity, line.quantity - (line.usedQuantity ?? 0), money(line.unitCost), money(line.quantity * line.unitCost),
+            line.firstPartnerShare == null ? "Pay girilmedi" : shareLabel(data.users, line.firstPartnerShare),
           ])} />
           <div className="row"><p className="subtle">Ekleyen {getMember(data.users, purchase.actorId)}{purchase.paymentDate && " · Ödeyen " + getMember(data.users, purchase.payerId) + " · " + dateLabel(purchase.paymentDate)}</p>
           <div className="actions">
@@ -317,7 +320,7 @@ function PartnersPage({ data, open }: { data: Shop; open: (editor: Editor) => vo
   const sender = figures && figures.partners[figures.firstBalance > 0 ? 1 : 0];
   const recipient = figures && figures.partners[figures.firstBalance > 0 ? 0 : 1];
   return <>
-    <SectionHeader title="Ortaklar" description="Ürünlerin pay oranlarına göre kârı ve ortaklar arasındaki ödemeleri takip et.">
+    <SectionHeader title="Ortaklar" description="Stok alımlarının pay oranlarına göre kârı ve ortaklar arasındaki ödemeleri takip et.">
       <AddButton onClick={() => open({ type: "partner-transfer" })}>Transfer Kaydet</AddButton>
     </SectionHeader>
     <div className="stack">
@@ -359,6 +362,49 @@ function PartnersPage({ data, open }: { data: Shop; open: (editor: Editor) => vo
               getMember(data.users, transfer.recipientId), money(transfer.amount), transfer.note || "—",
               <button className="danger" key={transfer.id} onClick={() => open({ type: "partner-transfer-delete", transfer })}>Sil</button>])} />
             : <Empty>Bu dönemde transfer kaydı yok.</Empty>}
+        </Panel>
+      </> : <p className="form-error" role="alert">Geçerli bir başlangıç ve bitiş tarihi seç.</p>}
+    </div>
+  </>;
+}
+function PerformancePage({ data }: { data: Shop }) {
+  const [from, setFrom] = useState(data.summary.month + "-01");
+  const [through, setThrough] = useState(today);
+  const [sort, setSort] = useState("quantity");
+  const [query, setQuery] = useState("");
+  const valid = from !== "" && through !== "" && from <= through;
+  const rows = valid ? calculatePerformance(data, from, through, today()) : [];
+  const shown = rows.filter(row => row.name.toLocaleLowerCase("tr-TR").includes(query.trim().toLocaleLowerCase("tr-TR")));
+  shown.sort((a, b) => {
+    if (sort === "profit") return b.profit - a.profit || a.name.localeCompare(b.name, "tr");
+    if (sort === "waiting") return b.daysInStock - a.daysInStock || b.stock - a.stock;
+    return b.quantity - a.quantity || b.profit - a.profit;
+  });
+  const totalSold = rows.reduce((sum, row) => sum + row.quantity, 0);
+  const totalProfit = rows.reduce((sum, row) => sum + row.profit, 0);
+  return <>
+    <SectionHeader title="Ürün Performansı" description="Satılan adetleri, ürün kârlarını ve stokta bekleyen ürünleri takip et." />
+    <div className="stack">
+      <div className="form form-row">
+        <label>Başlangıç<input type="date" value={from} onChange={event => setFrom(event.target.value)} /></label>
+        <label>Bitiş<input type="date" value={through} onChange={event => setThrough(event.target.value)} /></label>
+      </div>
+      {valid ? <>
+        <Panel title="Dönem toplamı" meta={<span>{totalSold} ürün · {money(totalProfit)} kâr</span>}>
+          <p className="subtle">Satış kârına kargo, platform kesintisi, paketleme ve ürün maliyeti dahildir. İptal ve iadeler çıkarılır. Genel kasa giderleri ürünlere dağıtılmaz.</p>
+        </Panel>
+        <Panel title="Ürünler">
+          <div className="form form-row">
+            <label>Ürün ara<input type="search" value={query} onChange={event => setQuery(event.target.value)} /></label>
+            <label>Sırala<select value={sort} onChange={event => setSort(event.target.value)}>
+              <option value="quantity">En çok satan</option><option value="profit">En çok kâr bırakan</option><option value="waiting">En uzun bekleyen</option>
+            </select></label>
+          </div>
+          <p className="subtle">Stok ve bekleme süresi bugünkü kalan ürünleri gösterir. Bekleme süresi eldeki en eski alımdan hesaplanır.</p>
+          {shown.length ? <Table headers={["Ürün", "Satılan adet", "Satış toplamı", "Kâr", "Kâr oranı", "Güncel stok", "Stokta bekleme"]}
+            rows={shown.map(row => [row.name, row.quantity, money(row.gross), money(row.profit),
+              row.margin === null ? "—" : "%" + row.margin.toLocaleString("tr-TR", { maximumFractionDigits: 1 }),
+              row.stock, row.stock ? row.daysInStock + " gün" : "—"])} /> : <Empty>Bu seçime uygun ürün yok.</Empty>}
         </Panel>
       </> : <p className="form-error" role="alert">Geçerli bir başlangıç ve bitiş tarihi seç.</p>}
     </div>
@@ -407,15 +453,17 @@ function shareLabel(users: Member[], share: number) {
   const [first, second] = [...users].sort((a, b) => a.id - b.id);
   return first.name + " %" + share + " · " + second.name + " %" + (100 - share);
 }
-function ShareField({ users, value, required = false }: { users: Member[]; value?: number | null; required?: boolean }) {
+function ShareField({ users, value, required = false, name = "firstPartnerShare", onChange }: {
+  users: Member[]; value?: number | null; required?: boolean; name?: string; onChange?: (share: string) => void;
+}) {
   const [first, second] = [...users].sort((a, b) => a.id - b.id);
   const [share, setShare] = useState(value == null ? "" : String(value));
   const valid = share !== "" && Number.isInteger(Number(share)) && Number(share) >= 0 && Number(share) <= 100;
   return <fieldset className="line-editor">
     <legend>Ortaklık payı</legend>
     <div className="form-row">
-      <label>{first.name} payı (%)<input name="firstPartnerShare" type="number" inputMode="numeric" min={0} max={100} step={1}
-        value={share} onChange={event => setShare(event.target.value)} required={required} /></label>
+      <label>{first.name} payı (%)<input name={name} type="number" inputMode="numeric" min={0} max={100} step={1}
+        value={share} onChange={event => { setShare(event.target.value); onChange?.(event.target.value); }} required={required} /></label>
       <label>{second.name} payı (%)<input value={valid ? 100 - Number(share) : ""} readOnly /></label>
     </div>
   </fieldset>;
@@ -484,7 +532,7 @@ async function encodePhoto(file: File) {
     return canvas.toDataURL("image/jpeg", 0.8);
   } finally { image.close(); }
 }
-function ProductForm({ product, users, busy, save }: { product?: Product; users: Member[]; busy: boolean; save: Save }) {
+function ProductForm({ product, busy, save }: { product?: Product; busy: boolean; save: Save }) {
   const [photo, setPhoto] = useState<string | null | undefined>(undefined);
   const [photoError, setPhotoError] = useState("");
   const [loading, setLoading] = useState(false);
@@ -492,7 +540,6 @@ function ProductForm({ product, users, busy, save }: { product?: Product; users:
     id: product?.id, name: field(data, "name"), photo, lowThreshold: Number(field(data, "lowThreshold")),
     dolapListPrice: requiredMoney(field(data, "dolapListPrice")),
     gardropsListPrice: requiredMoney(field(data, "gardropsListPrice")),
-    firstPartnerShare: Number(field(data, "firstPartnerShare")),
   }))}>
     <label>Ürün adı<input name="name" defaultValue={product?.name} maxLength={120} required /></label>
     <div className="form-row">
@@ -500,7 +547,6 @@ function ProductForm({ product, users, busy, save }: { product?: Product; users:
       <AmountField label="Gardrops liste fiyatı (₺)" name="gardropsListPrice" value={product ? moneyInput(product.gardropsListPrice) : undefined} />
     </div>
     <label>Düşük stok eşiği<input name="lowThreshold" type="number" inputMode="numeric" min={0} step={1} defaultValue={product?.lowThreshold ?? 2} required /></label>
-    <ShareField users={users} value={product?.firstPartnerShare} required />
     <label>Ürün fotoğrafı<input type="file" accept="image/jpeg,image/png,image/webp" onChange={async event => {
       const file = event.target.files?.[0];
       if (!file) return;
@@ -520,23 +566,33 @@ function ProductForm({ product, users, busy, save }: { product?: Product; users:
   </form>;
 }
 type Save = (event: FormEvent<HTMLFormElement>, action: string, build: (data: FormData) => unknown) => void;
-type DraftLine = { id: number; productId: string; quantity: string; priceOverride: string | null; original?: Purchase["lines"][number] };
-function LinesForm({ mode, purchaseToEdit, shop, user, busy, save, addProduct }: {
-  mode: "purchase" | "order"; purchaseToEdit?: Purchase; shop: Shop; user: Member; busy: boolean; save: Save; addProduct: () => void;
+type DraftLine = { id: number; productId: string; quantity: string; priceOverride: string | null;
+  firstPartnerShare?: string; original?: Purchase["lines"][number] };
+function LinesForm({ mode, purchaseToEdit, orderToEdit, shop, user, busy, save, addProduct }: {
+  mode: "purchase" | "order"; purchaseToEdit?: Purchase; orderToEdit?: Order; shop: Shop; user: Member; busy: boolean; save: Save; addProduct: () => void;
 }) {
   const purchase = mode === "purchase";
-  const products = shop.products.filter(product => purchase || product.stock > 0);
-  const [lines, setLines] = useState<DraftLine[]>(() => purchaseToEdit?.lines.map((line, index) => ({
-    id: index + 1, productId: String(line.productId), quantity: String(line.quantity), priceOverride: moneyInput(line.unitCost), original: line,
-  })) ?? [{ id: 1, productId: "", quantity: "1", priceOverride: null }]);
+  const products = shop.products.filter(product => purchase || product.stock > 0 || orderToEdit?.lines.some(line => line.productId === product.id));
+  const [lines, setLines] = useState<DraftLine[]>(() => {
+    if (purchaseToEdit) return purchaseToEdit.lines.map((line, index) => ({
+      id: index + 1, productId: String(line.productId), quantity: String(line.quantity), priceOverride: moneyInput(line.unitCost), original: line,
+      firstPartnerShare: line.firstPartnerShare == null ? "" : String(line.firstPartnerShare),
+    }));
+    if (orderToEdit) return orderProducts(orderToEdit).map((line, index) => ({
+      id: index + 1, productId: String(line.productId), quantity: String(line.quantity),
+      priceOverride: moneyInput(Math.floor(orderToEdit.lines.filter(original => original.productId === line.productId)
+        .reduce((sum, original) => sum + original.quantity * original.agreedPrice, 0) / line.quantity)),
+    }));
+    return [{ id: 1, productId: "", quantity: "1", priceOverride: null }];
+  });
   const nextLineId = useRef(lines.length + 1);
-  const [platform, setPlatform] = useState<Platform>("Dolap");
+  const [platform, setPlatform] = useState<Platform>(orderToEdit?.platform ?? "Dolap");
   const [total, setTotal] = useState("");
-  const [saleTotal, setSaleTotal] = useState("");
-  const [netAfterShipping, setNetAfterShipping] = useState("");
-  const [fee, setFee] = useState("0");
-  const [shipping, setShipping] = useState("0");
-  const [packing, setPacking] = useState(() => moneyInput(defaultPacking(shop)));
+  const [saleTotal, setSaleTotal] = useState(orderToEdit ? moneyInput(orderToEdit.gross) : "");
+  const [netAfterShipping, setNetAfterShipping] = useState(orderToEdit?.netAfterShipping == null ? "" : moneyInput(orderToEdit.netAfterShipping));
+  const [fee, setFee] = useState(orderToEdit ? moneyInput(orderToEdit.platformFee) : "0");
+  const [shipping, setShipping] = useState(orderToEdit ? moneyInput(orderToEdit.shipping) : "0");
+  const [packing, setPacking] = useState(() => moneyInput(orderToEdit?.packing ?? defaultPacking(shop)));
   const [paid, setPaid] = useState(false);
   const usesSaleTotal = !purchase && saleTotal.trim() !== "";
   const usesNet = netAfterShipping.trim() !== "";
@@ -548,7 +604,9 @@ function LinesForm({ mode, purchaseToEdit, shop, user, busy, save, addProduct }:
   }
   const rows = lines.map(line => {
     const product = products.find(product => product.id === Number(line.productId));
-    const listPrice = platform === "Dolap" ? product?.dolapListPrice : product?.gardropsListPrice;
+    const originalPrice = orderToEdit?.platform === platform
+      ? orderToEdit.lines.find(original => original.productId === Number(line.productId))?.listPrice : undefined;
+    const listPrice = originalPrice ?? (platform === "Dolap" ? product?.dolapListPrice : product?.gardropsListPrice);
     const price = line.priceOverride ?? (!purchase && listPrice !== undefined ? moneyInput(listPrice) : "");
     return { line, product, listPrice, price };
   });
@@ -564,7 +622,7 @@ function LinesForm({ mode, purchaseToEdit, shop, user, busy, save, addProduct }:
     <Empty>{purchase ? "Stok alımı kaydetmek için önce bir ürün ekle." : "Satış eklemek için stokta en az bir ürün olmalı."}</Empty>
     {purchase && <div className="actions"><AddButton primary onClick={addProduct}>Ürün Ekle</AddButton></div>}
   </div>;
-  return <form className="form" onSubmit={event => save(event, purchaseToEdit ? "purchase-edit" : mode, data => {
+  return <form className="form" onSubmit={event => save(event, purchaseToEdit ? "purchase-edit" : orderToEdit ? "order-edit" : mode, data => {
     const date = field(data, "date");
     const baseLines = rows.map(({ line, price }) => ({ productId: Number(line.productId), quantity: Number(line.quantity),
       price: usesSaleTotal ? undefined : requiredMoney(price) }));
@@ -572,17 +630,19 @@ function LinesForm({ mode, purchaseToEdit, shop, user, busy, save, addProduct }:
       const name = field(data, "name");
       if (purchaseToEdit) return {
         id: purchaseToEdit.id, revision: purchaseToEdit.revision, name, date, total: sum,
-        lines: baseLines.map(({ price, ...line }, index) => ({ ...line, unitCost: price, lotId: lines[index].original?.lotId })),
+        lines: baseLines.map(({ price, ...line }, index) => ({ ...line, unitCost: price, lotId: lines[index].original?.lotId,
+        firstPartnerShare: Number(lines[index].firstPartnerShare) })),
       };
       const amount = requiredMoney(total);
       if (amount !== sum) throw new Error("Kutu toplamı, ürün satırlarının toplamıyla eşleşmeli.");
       return {
         name, date, total: amount,
-        lines: baseLines.map(({ price, ...line }) => ({ ...line, unitCost: price })),
+        lines: baseLines.map(({ price, ...line }, index) => ({ ...line, unitCost: price, firstPartnerShare: Number(lines[index].firstPartnerShare) })),
         payment: paid ? { date: field(data, "paymentDate"), payerId: Number(field(data, "payerId")) } : undefined,
       };
     }
     return {
+      id: orderToEdit?.id, revision: orderToEdit?.revision,
       platform, date, reference: field(data, "reference").trim() || undefined,
       lines: baseLines.map(({ price, ...line }) => ({ ...line, agreedPrice: price })),
       saleTotal: usesSaleTotal ? requiredMoney(saleTotal) : undefined,
@@ -593,9 +653,10 @@ function LinesForm({ mode, purchaseToEdit, shop, user, busy, save, addProduct }:
   })}>
     <div className="form-row">
       {purchase ? <label>Kutu adı<input name="name" defaultValue={purchaseToEdit?.name} maxLength={120} required /></label> : <label>Platform<select name="platform" value={platform} onChange={event => setPlatform(event.target.value as Platform)}><option>Dolap</option><option>Gardrops</option></select></label>}
-      <DateField label={purchase ? "Alım tarihi" : "Satış tarihi"} value={purchaseToEdit?.date} />
+      <DateField label={purchase ? "Alım tarihi" : "Satış tarihi"} value={purchaseToEdit?.date ?? orderToEdit?.date} />
     </div>
-    {!purchase && <label>Sipariş numarası veya referans (isteğe bağlı)<input name="reference" maxLength={100} /></label>}
+    {!purchase && <label>Sipariş numarası veya referans (isteğe bağlı)<input name="reference" defaultValue={orderToEdit?.reference ?? ""} maxLength={100} /></label>}
+    {orderToEdit?.receiptDate && <p className="subtle">Kayıtlı tahsilat {money(orderToEdit.receiptAmount ?? 0)}. Tahsilatı Kasa ve Giderler ekranından düzenleyebilirsin.</p>}
     {rows.map(({ line, product, listPrice, price }, index) => (
       <fieldset className="line-editor" key={line.id}>
         <legend>Ürün {index + 1}</legend>
@@ -607,9 +668,12 @@ function LinesForm({ mode, purchaseToEdit, shop, user, busy, save, addProduct }:
           {products.filter(product => line.productId === String(product.id) || !lines.some(other => other.id !== line.id && other.productId === String(product.id))).map(product => <option key={product.id} value={product.id}>{product.name}{purchase ? "" : " · " + product.stock + " adet"}</option>)}
         </select></label>
         <div className="form-row">
-          <label>{purchaseToEdit ? "Alınan adet" : "Adet"}<input type="number" min={Math.max(1, line.original?.usedQuantity ?? 0)} max={purchase ? 100000 : product?.stock} inputMode="numeric" step={1} value={line.quantity} onChange={event => updateLine(line.id, { quantity: event.target.value })} required /></label>
+          <label>{purchaseToEdit ? "Alınan adet" : "Adet"}<input type="number" min={Math.max(1, line.original?.usedQuantity ?? 0)} max={purchase ? 100000 : (product?.stock ?? 0) + (orderToEdit?.lines.filter(original => original.productId === product?.id).reduce((sum, original) => sum + original.quantity, 0) ?? 0)} inputMode="numeric" step={1} value={line.quantity} onChange={event => updateLine(line.id, { quantity: event.target.value })} required /></label>
           {!usesSaleTotal && <label>{purchase ? "Birim maliyet (₺)" : "Anlaşılan birim fiyat (₺)"}<input inputMode="decimal" value={price} readOnly={line.original?.hasSalesHistory} onChange={event => updateLine(line.id, { priceOverride: event.target.value })} maxLength={13} placeholder="0,00" required /></label>}
         </div>
+        {purchase && <ShareField users={shop.users} name={"share-" + line.id} value={line.original?.firstPartnerShare} required
+          onChange={share => updateLine(line.id, { firstPartnerShare: share })} />}
+        {purchase && <p className="subtle">Bu alımdaki ürünlerin kâr payı. %100 ve %0 ile tek ortağa ait stok girebilirsin.</p>}
         {line.original?.hasSalesHistory && <p className="subtle">Satışlarda kullanılan {line.original.usedQuantity} adet · Ürün ve birim maliyet satış geçmişi nedeniyle sabit.</p>}
         {!purchase && listPrice !== undefined && <p className="subtle">{platform} liste fiyatı {money(listPrice)}</p>}
         {lines.length > 1 && !line.original?.hasSalesHistory && <div className="actions"><button className="danger" type="button" onClick={() => setLines(active => active.filter(other => other.id !== line.id))}>Satırı kaldır</button></div>}
@@ -652,7 +716,7 @@ function LinesForm({ mode, purchaseToEdit, shop, user, busy, save, addProduct }:
         <div className="inline"><span>Paketleme sonrası kalan</span><strong>{Number.isFinite(afterPacking) ? money(afterPacking) : "—"}</strong></div>
       </div>
     </>}
-    <SaveButton busy={busy}>{purchaseToEdit ? "Değişiklikleri kaydet" : purchase ? "Stok alımını kaydet" : "Satışı kaydet"}</SaveButton>
+    <SaveButton busy={busy}>{purchaseToEdit || orderToEdit ? "Değişiklikleri kaydet" : purchase ? "Stok alımını kaydet" : "Satışı kaydet"}</SaveButton>
   </form>;
 }
 function orderProducts(order: Order) {
@@ -669,9 +733,10 @@ function OrderDetail({ order, users, audit, open }: { order: Order; users: Membe
     order: "Satış kaydedildi", "order-status": "Durum güncellendi", receipt: "Tahsilat kaydedildi",
     "receipt-edit": "Tahsilat düzenlendi", "receipt-delete": "Tahsilat silindi",
     "order-share": "Eksik pay oranı kaydedildi",
+    "order-edit": "Satış düzenlendi",
   };
   const history = audit.filter(item => item.entityId === order.id && Object.hasOwn(actions, item.action));
-  const shares = new Map(order.lines.map(line => [line.productId, line]));
+  const shares = new Map(order.lines.map(line => [line.lotId + ":" + line.firstPartnerShare, line]));
   const net = order.netAfterShipping ?? (order.gross - order.platformFee - order.shipping);
   const deductions: [string, number][] = order.netAfterShipping == null
     ? [["Platform kesintisi", order.platformFee], ["Ödediğimiz kargo", order.shipping], ["Platformdan beklenen ödeme", order.expectedReceipt]]
@@ -685,10 +750,10 @@ function OrderDetail({ order, users, audit, open }: { order: Order; users: Membe
   return <div className="stack">
     <div className="inline"><p>{order.platform} · {order.reference || "#" + order.id} · {dateLabel(order.date)}</p><span className="pill">{statusLabel[order.status]}</span></div>
     <Table headers={["Ürün", "Adet", "Liste fiyatı", "Satış fiyatı", "Stok maliyeti"]} rows={order.lines.map(line => [line.productName, line.quantity, money(line.listPrice), money(line.agreedPrice), money(line.cost ?? line.unitCost * line.quantity)])} />
-    <Table headers={["Ürün", "Satıştaki ortaklık payı"]} rows={[...shares.values()].map(line => [
-      line.productName,
+    <Table headers={["Ürün / Stok alımı", "Satıştaki ortaklık payı"]} rows={[...shares.values()].map(line => [
+      line.productName + " · #" + line.purchaseId,
       line.firstPartnerShare == null
-        ? <button key={line.productId} onClick={() => open({ type: "order-share", order, productId: line.productId, productName: line.productName })}>Pay oranını gir</button>
+        ? <button key={line.lotId} onClick={() => open({ type: "order-share", order, productId: line.productId, lotId: line.lotId, productName: line.productName })}>Pay oranını gir</button>
         : shareLabel(users, line.firstPartnerShare),
     ])} />
     <div className="form-totals">
@@ -718,6 +783,7 @@ function getTitle(editor: Editor) {
     case "purchase": return "Stok alımı ekle";
     case "purchase-edit": return "Stok alımını düzenle";
     case "order": return "Satış ekle";
+    case "order-edit": return "Satışı düzenle";
     case "expense": return editor.expense ? "Gideri düzenle" : "Gider ekle";
     case "cash-payment-edit": return editor.payment.kind === "receipt" ? "Tahsilatı düzenle" : "Stok ödemesini düzenle";
     case "cash-delete": return "Kasa kaydını sil";
@@ -734,12 +800,14 @@ function getTitle(editor: Editor) {
 function EditorBody({ editor, shop, user, busy, save, open }: { editor: Editor; shop: Shop; user: Member; busy: boolean; save: Save; open: (editor: Editor) => void }) {
   switch (editor.type) {
     case "product":
-      return <ProductForm product={editor.product} users={shop.users} busy={busy} save={save} />;
+      return <ProductForm product={editor.product} busy={busy} save={save} />;
     case "purchase":
     case "order":
       return <LinesForm mode={editor.type} shop={shop} user={user} busy={busy} save={save} addProduct={() => open({ type: "product" })} />;
     case "purchase-edit":
       return <LinesForm mode="purchase" purchaseToEdit={editor.purchase} shop={shop} user={user} busy={busy} save={save} addProduct={() => open({ type: "product" })} />;
+    case "order-edit":
+      return <LinesForm mode="order" orderToEdit={editor.order} shop={shop} user={user} busy={busy} save={save} addProduct={() => open({ type: "product" })} />;
     case "order-detail":
       return <OrderDetail order={editor.order} users={shop.users} audit={shop.audit} open={open} />;
     case "settings":
@@ -751,7 +819,7 @@ function EditorBody({ editor, shop, user, busy, save, open }: { editor: Editor; 
       </form>;
     case "order-share":
       return <form className="form" onSubmit={event => save(event, "order-share", data => ({
-        id: editor.order.id, productId: editor.productId, firstPartnerShare: Number(field(data, "firstPartnerShare")),
+        id: editor.order.id, productId: editor.productId, lotId: editor.lotId, firstPartnerShare: Number(field(data, "firstPartnerShare")),
       }))}>
         <p>{editor.productName} · {dateLabel(editor.order.date)}</p>
         <p className="subtle">Bu satışta geçerli olan oranı gir. Kaydettiğinde bu satışın oranı sabitlenir.</p>
@@ -876,11 +944,12 @@ function EditorDialog({ editor, shop, user, busy, error, save, open, close }: { 
 function visiblePage(page: PageName, shop: Shop, open: (editor: Editor) => void) {
   switch (page) {
     case "dashboard": return <Dashboard data={shop} open={open} />;
-    case "products": return <Products products={shop.products} users={shop.users} open={open} />;
+    case "products": return <Products products={shop.products} open={open} />;
     case "orders": return <Orders orders={shop.orders} open={open} />;
     case "stock": return <StockPage data={shop} open={open} />;
     case "cash": return <CashPage data={shop} open={open} />;
     case "partners": return <PartnersPage data={shop} open={open} />;
+    case "performance": return <PerformancePage data={shop} />;
     case "reports": return <Reports month={shop.summary.month} />;
     case "settings": return <SettingsPage shop={shop} open={open} />;
   }

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { calculatePartnership } from "../lib/shop-partnership.ts";
+import { calculatePerformance } from "../lib/shop-performance.ts";
 
 const from = "2026-11-01";
 const through = "2026-11-30";
@@ -72,4 +73,32 @@ test("uses the order's direct net before packing to calculate product profits", 
   const result = calculatePartnership({ ...fixtures, orders: [direct] }, from, through);
   assert.deepEqual(result.products.map(product => product.profit), [41300, 24200]);
   assert.equal(result.firstBalance, -51200);
+});
+
+test("splits the same product using each FIFO lot's independent share", () => {
+  const mixed = { ...sale, packing: 0, shipping: 0, platformFee: 0, netAfterShipping: null, receiptAmount: 60000,
+    lines: [
+      { ...sale.lines[0], agreedPrice: 30000, quantity: 1, unitCost: 10000, firstPartnerShare: 100 },
+      { ...sale.lines[0], purchaseId: 2, agreedPrice: 30000, quantity: 1, unitCost: 10000, firstPartnerShare: 0 },
+    ],
+  };
+  const result = calculatePartnership({ ...fixtures, orders: [mixed], expenses: [] }, from, through);
+  assert.equal(result.products.length, 1);
+  assert.deepEqual([result.products[0].profit, result.products[0].firstProfit, result.products[0].secondProfit], [40000, 20000, 20000]);
+  assert.equal(result.firstBalance, -30000);
+});
+
+test("performance uses active sales and the oldest remaining lot for stock age", () => {
+  const data = { ...fixtures,
+    products: [{ id: 1, name: "Peach", stock: 3 }, { id: 2, name: "Berry", stock: 0 }, { id: 3, name: "Unsold", stock: 2 }],
+    orders: [sale, { ...sale, id: 4, status: "cancelled" }, { ...sale, id: 5, status: "returned" }],
+    purchases: [
+      { ...fixtures.purchases[0], date: "2026-09-01", lines: [{ productId: 1, quantity: 2, usedQuantity: 2 }] },
+      { ...fixtures.purchases[1], date: "2026-11-10", lines: [{ productId: 1, quantity: 4, usedQuantity: 1 }, { productId: 3, quantity: 2, usedQuantity: 0 }] },
+    ],
+  };
+  const result = calculatePerformance(data, from, through, "2026-11-18");
+  assert.deepEqual(result.map(row => [row.quantity, row.profit, row.stock, row.daysInStock]), [[4, 41000, 3, 8], [2, 24000, 0, 0], [0, 0, 2, 8]]);
+  assert.equal(result.reduce((sum, row) => sum + row.profit, 0), 65000);
+  assert.deepEqual(calculatePerformance(data, "2026-12-01", "2026-12-31", "2026-11-18").map(row => row.quantity), [0, 0, 0]);
 });

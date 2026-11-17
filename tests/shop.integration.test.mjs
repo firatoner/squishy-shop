@@ -167,7 +167,7 @@ test("Two members track inventory, sales, supplier payments, and expenses", asyn
   for (const correction of corrections) await ok(ayse("cash-edit", correction));
   const corrected = await state();
   const receipt = corrected.orders.find(({ id }) => id === receiptOrderId);
-  assert.equal(receipt.lines[0].firstPartnerShare, 25);
+  assert.equal(receipt.lines[0].firstPartnerShare, 70);
   assert.deepEqual([receipt.receiptDate, receipt.receiptAmount, receipt.recipientId], ["2026-09-17", 50000, ayseId]);
   const purchase = corrected.purchases.find(({ id }) => id === purchaseId);
   assert.deepEqual([purchase.paymentDate, purchase.payerId, purchase.total], ["2026-09-18", ayseId, 20000]);
@@ -281,6 +281,59 @@ test("Two members track inventory, sales, supplier payments, and expenses", asyn
   assert.deepEqual([lockedLot.usedQuantity, lockedLot.hasSalesHistory], [2, true]);
   assert.equal(reduced.orders.find(order => order.id === stockEditOrderId).cost, 2000);
   assert.equal(reduced.cash.find(movement => movement.kind === "purchase" && movement.id === editedPurchaseId).amount, -2400);
+
+  const lotProduct = (await ok(mert("product", { name: "Mixed ownership", dolapListPrice: 3000, gardropsListPrice: 3000, lowThreshold: 0 }))).id;
+  const lotPurchases = [];
+  for (const [firstPartnerShare, unitCost, payerId] of [[100, 1000, mertId], [0, 2000, ayseId]]) {
+    const id = (await ok(mert("purchase", { name: "Lot " + firstPartnerShare, date, total: unitCost * 2,
+      payment: { date, payerId }, lines: [{ productId: lotProduct, quantity: 2, unitCost, firstPartnerShare }] }))).id;
+    lotPurchases.push(id);
+  }
+  const mixedOrderId = (await ok(mert("order", { date, platform: "Dolap", reference: "MIXED-LOT", saleTotal: 9000, netAfterShipping: 8500, packing: 100,
+    lines: [{ productId: lotProduct, quantity: 3 }] }))).id;
+  const mixedState = await state();
+  const mixedOrder = mixedState.orders.find(order => order.id === mixedOrderId);
+  assert.deepEqual(mixedOrder.lines.map(line => [line.purchaseId, line.quantity, line.firstPartnerShare]),
+    [[lotPurchases[0], 2, 100], [lotPurchases[1], 1, 0]]);
+  await ok(ayse("receipt", { id: mixedOrderId, date, amount: 8500, recipientId: mertId }));
+  const sharePurchase = (await state()).purchases.find(purchase => purchase.id === lotPurchases[0]);
+  await ok(ayse("purchase-edit", { id: sharePurchase.id, revision: sharePurchase.revision, name: sharePurchase.name, date, total: sharePurchase.total,
+    lines: sharePurchase.lines.map(line => ({ ...line, firstPartnerShare: 50 })) }));
+  const editOrder = { id: mixedOrderId, revision: mixedOrder.revision, date: "2026-09-17", platform: "Dolap", reference: "MIXED-EDIT",
+    saleTotal: 9000, netAfterShipping: 8200, packing: 200, lines: [{ productId: lotProduct, quantity: 3 }] };
+  assert.equal((await client()("order-edit", editOrder)).status, 401);
+  await ok(ayse("order-edit", editOrder));
+  const editedState = await state();
+  const editedMixed = editedState.orders.find(order => order.id === mixedOrderId);
+  assert.deepEqual(editedMixed.lines.map(line => [line.purchaseId, line.quantity, line.firstPartnerShare]),
+    [[lotPurchases[0], 2, 100], [lotPurchases[1], 1, 0]]);
+  assert.deepEqual([editedMixed.gross, editedMixed.cost, editedMixed.profit, editedMixed.receiptAmount], [9000, 4000, 4000, 8500]);
+  assert.equal(editedState.summary.cashBalance, mixedState.summary.cashBalance + 8500);
+  assert.equal((await ayse("order-edit", editOrder)).status, 409);
+  const excessiveEdit = { ...editOrder, revision: editedMixed.revision, lines: [{ productId: lotProduct, quantity: 99 }] };
+  assert.equal((await ayse("order-edit", excessiveEdit)).status, 409);
+  assert.deepEqual((await state()).orders.find(order => order.id === mixedOrderId), editedMixed);
+  assert.equal((await state()).products.find(product => product.id === lotProduct).stock, 1);
+  await ok(mert("order-edit", { ...editOrder, revision: editedMixed.revision, saleTotal: 3500, netAfterShipping: 3000, packing: 250,
+    lines: [{ productId: lotProduct, quantity: 1 }] }));
+  const reducedMixed = (await state()).orders.find(order => order.id === mixedOrderId);
+  assert.deepEqual([reducedMixed.gross, reducedMixed.cost, reducedMixed.profit, reducedMixed.lines[0].firstPartnerShare], [3500, 1000, 1750, 100]);
+  assert.equal((await state()).products.find(product => product.id === lotProduct).stock, 3);
+  await ok(mert("order-status", { id: mixedOrderId, date, status: "cancelled" }));
+  assert.equal((await state()).products.find(product => product.id === lotProduct).stock, 4);
+  assert.equal((await mert("order-edit", { ...editOrder, revision: reducedMixed.revision })).status, 409);
+
+  const priceOrderId = (await ok(mert("order", { date, platform: "Dolap", reference: "PRICE-PRESERVATION", platformFee: 0, shipping: 0, packing: 100,
+    lines: [{ productId: lotProduct, quantity: 1, agreedPrice: 3500 }, { productId: replacementProduct, quantity: 1, agreedPrice: 2000 }] }))).id;
+  const priceOrder = (await state()).orders.find(order => order.id === priceOrderId);
+  await ok(mert("product", { id: lotProduct, name: "Mixed ownership", dolapListPrice: 9999, gardropsListPrice: 9999, lowThreshold: 0 }));
+  await ok(mert("order-edit", { id: priceOrderId, revision: priceOrder.revision, date, platform: "Dolap", reference: "PRICE-PRESERVATION",
+    saleTotal: 5500, platformFee: 0, shipping: 0, packing: 300,
+    lines: [{ productId: lotProduct, quantity: 1 }, { productId: replacementProduct, quantity: 1 }] }));
+  const pricesAfterEdit = (await state()).orders.find(order => order.id === priceOrderId);
+  assert.deepEqual(pricesAfterEdit.lines.map(line => [line.productId, line.quantity, line.agreedPrice, line.listPrice]),
+    priceOrder.lines.map(line => [line.productId, line.quantity, line.agreedPrice, line.listPrice]));
+  assert.equal(pricesAfterEdit.packing, 300);
 
   await ok(mert("logout", {}));
   assert.equal((await ok(mert("session"))).user, null);
