@@ -1,7 +1,7 @@
 import { createHash, pbkdf2, randomBytes, timingSafeEqual } from "node:crypto";
 import { promisify } from "node:util";
 
-export type Rpc = <T>(group: "auth" | "write" | "read" | "cash_write" | "partnership_write" | "settings_write", data: Record<string, unknown>) => Promise<T>;
+export type Rpc = <T>(group: "auth" | "write" | "read" | "cash_write" | "partnership_write" | "settings_write" | "stock_write", data: Record<string, unknown>) => Promise<T>;
 type Environment = { rpc: Rpc; setupToken?: string; secureCookies: boolean };
 type Input = Record<string, unknown>;
 type User = { id: number; name: string; username: string };
@@ -124,12 +124,22 @@ function mutation(action: string, input: Input) {
         firstPartnerShare: input.firstPartnerShare === undefined ? undefined : partnerShare(input.firstPartnerShare),
         lowThreshold: integer(input.lowThreshold, "Düşük stok eşiği", 0, 100_000) };
     }
-    case "purchase": {
-      const lines = list(input.lines, (line) => ({ productId: id(line.productId), quantity: quantity(line.quantity), unitCost: money(line.unitCost, "Birim maliyet") }));
+    case "purchase":
+    case "purchase-edit": {
+      const lines = list(input.lines, line => ({
+        productId: id(line.productId), quantity: quantity(line.quantity), unitCost: money(line.unitCost, "Birim maliyet"),
+        lotId: action === "purchase-edit" && line.lotId !== undefined ? id(line.lotId) : undefined,
+      }));
       const total = money(input.total, "Koli toplamı", 1);
       if (lines.reduce((sum, line) => sum + line.quantity * line.unitCost, 0) !== total) fail("Ürün maliyetleri koli toplamıyla eşleşmeli.");
+      const purchase = { name: strings(input.name, "Koli adı", 120), date: date(input.date), total, lines };
+      if (action === "purchase-edit") {
+        const lotIds = lines.flatMap(line => line.lotId === undefined ? [] : [line.lotId]);
+        if (new Set(lotIds).size !== lotIds.length) fail("Her alım satırını bir kez gönderin.");
+        return { ...purchase, id: id(input.id), revision: integer(input.revision, "Kayıt sürümü", 0, 2_147_483_647) };
+      }
       const payment = input.payment == null ? undefined : object(input.payment);
-      return { name: strings(input.name, "Koli adı", 120), date: date(input.date), total, lines,
+      return { ...purchase,
         payment: payment && { date: date(payment.date), payerId: id(payment.payerId) } };
     }
     case "purchase-payment":
@@ -279,7 +289,7 @@ type ExportState = {
 type Cell = string | number | null;
 const moneyCsv = (value: number | null) => value === null ? null : (value / 100).toFixed(2).replace(".", ",");
 const dateCsv = (value: string | null) => value === null ? null : value.split("-").reverse().join(".");
-const csvStatus: Record<string, string> = { pending: "Paketlenecek", packed: "Paketlendi", cancelled: "İptal", returned: "İade", sale: "Satış", purchase: "Alış" };
+const csvStatus: Record<string, string> = { pending: "Paketlenecek", packed: "Paketlendi", cancelled: "İptal", returned: "İade", sale: "Satış", purchase: "Alış", adjustment: "Stok düzeltmesi" };
 
 function csvCell(value: Cell) {
   let cell = String(value ?? "");
@@ -382,6 +392,7 @@ export async function handleShopRequest(request: Request, action: string, env: E
       const group = action === "cash-edit" || action === "cash-delete" ? "cash_write"
         : action === "order-share" || action === "partner-transfer" || action === "partner-transfer-delete" ? "partnership_write"
         : action === "settings" ? "settings_write"
+        : action === "purchase-edit" ? "stock_write"
         : "write";
       return json(await env.rpc(group, { p_action: action, p_actor: session.user.id, p_data }));
     }

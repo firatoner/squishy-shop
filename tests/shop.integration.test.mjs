@@ -239,6 +239,49 @@ test("Two members track inventory, sales, supplier payments, and expenses", asyn
   assert.equal(fallback.profit, -1925);
   assert.equal((await state()).summary.cashBalance, 31000);
 
+  const [editableProduct, replacementProduct] = await Promise.all(["Editable stock", "Replacement stock"].map(async name =>
+    (await ok(mert("product", { name, dolapListPrice: 5000, gardropsListPrice: 5000, lowThreshold: 0, firstPartnerShare: 50 }))).id));
+  const editedPurchaseId = (await ok(mert("purchase", {
+    name: "Stock to correct", date, total: 2200, payment: { date, payerId: mertId },
+    lines: [{ productId: editableProduct, quantity: 2, unitCost: 800 }, { productId: bundleA, quantity: 2, unitCost: 300 }],
+  }))).id;
+  const originalPurchase = (await state()).purchases.find(purchase => purchase.id === editedPurchaseId);
+  const [firstLot, wrongLot] = originalPurchase.lines;
+  const correction = { id: editedPurchaseId, revision: originalPurchase.revision, date: "2026-09-16", name: "Corrected stock", total: 3400,
+    lines: [{ lotId: firstLot.lotId, productId: editableProduct, quantity: 3, unitCost: 1000 },
+      { lotId: wrongLot.lotId, productId: replacementProduct, quantity: 1, unitCost: 400 }] };
+  assert.equal((await client()("purchase-edit", correction)).status, 401);
+  await ok(ayse("purchase-edit", correction));
+  assert.equal((await mert("purchase-edit", correction)).status, 409);
+  const afterCorrection = await state();
+  const editedPurchase = afterCorrection.purchases.find(purchase => purchase.id === editedPurchaseId);
+  assert.deepEqual([editedPurchase.name, editedPurchase.date, editedPurchase.paymentDate, editedPurchase.payerId, editedPurchase.total],
+    ["Corrected stock", "2026-09-16", date, mertId, 3400]);
+  assert.deepEqual(afterCorrection.cash.filter(movement => movement.kind === "purchase" && movement.id === editedPurchaseId)
+    .map(({ amount, description }) => [amount, description]), [[-3400, "Corrected stock"]]);
+  assert.deepEqual(afterCorrection.stock.filter(item => item.kind === "adjustment" && item.reference === "Corrected stock")
+    .map(({ productId, quantity }) => [productId, quantity]).sort((a, b) => a[0] - b[0]),
+    [[bundleA, -2], [editableProduct, 1], [replacementProduct, 1]].sort((a, b) => a[0] - b[0]));
+  assert.match(await ok(mert("export?kind=stock")), /Stok düzeltmesi/);
+
+  const stockEditOrderId = (await ok(mert("order", {
+    date, platform: "Dolap", reference: "STOCK-EDIT", platformFee: 0, shipping: 0, packing: 0,
+    lines: [{ productId: editableProduct, quantity: 2, agreedPrice: 5000 }],
+  }))).id;
+  const revise = { ...correction, revision: editedPurchase.revision };
+  const reviseFirst = (quantity, unitCost, total) => ({ ...revise, total,
+    lines: [{ ...revise.lines[0], quantity, unitCost }, revise.lines[1]] });
+  assert.equal((await ayse("purchase-edit", reviseFirst(1, 1000, 1400))).status, 409);
+  assert.equal((await ayse("purchase-edit", reviseFirst(3, 900, 3100))).status, 409);
+  assert.equal((await ayse("purchase-edit", { ...revise, total: 400, lines: [revise.lines[1]] })).status, 409);
+  await ok(ayse("purchase-edit", reviseFirst(2, 1000, 2400)));
+  const reduced = await state();
+  assert.equal(reduced.products.find(product => product.id === editableProduct).stock, 0);
+  const lockedLot = reduced.purchases.find(purchase => purchase.id === editedPurchaseId).lines[0];
+  assert.deepEqual([lockedLot.usedQuantity, lockedLot.hasSalesHistory], [2, true]);
+  assert.equal(reduced.orders.find(order => order.id === stockEditOrderId).cost, 2000);
+  assert.equal(reduced.cash.find(movement => movement.kind === "purchase" && movement.id === editedPurchaseId).amount, -2400);
+
   await ok(mert("logout", {}));
   assert.equal((await ok(mert("session"))).user, null);
   assert.equal((await mert("state")).status, 401);

@@ -9,9 +9,10 @@ type Session = { user: Member | null; needsSetup: boolean };
 type Platform = "Dolap" | "Gardrops";
 type Product = { id: number; name: string; photo: string | null; dolapListPrice: number; gardropsListPrice: number; lowThreshold: number; stock: number; firstPartnerShare: number | null };
 type Purchase = {
-  id: number; name: string; date: string; total: number; actorId: number;
+  id: number; name: string; date: string; total: number; actorId: number; revision: number;
   paymentDate: string | null; payerId: number | null;
-  lines: { productId: number; productName: string; quantity: number; unitCost: number }[];
+  lines: { lotId: number; productId: number; productName: string; quantity: number; unitCost: number;
+    usedQuantity: number; hasSalesHistory: boolean }[];
 };
 type OrderStatus = "pending" | "packed" | "cancelled" | "returned";
 type Order = {
@@ -43,6 +44,7 @@ type Editor =
   | { type: "cash-payment-edit"; payment: Cash }
   | { type: "cash-delete"; entry: CashEntry }
   | { type: "purchase-payment"; purchase: Purchase }
+  | { type: "purchase-edit"; purchase: Purchase }
   | { type: "receipt" | "order-detail"; order: Order }
   | { type: "order-share"; order: Order; productId: number; productName: string }
   | { type: "partner-transfer"; senderId?: number; amount?: number }
@@ -64,7 +66,7 @@ const statusLabel: Record<OrderStatus, string> = {
   pending: "Paketlenecek", packed: "Paketlendi", cancelled: "İptal edildi", returned: "İade edildi",
 };
 const stockLabel: Record<string, string> = {
-  purchase: "Stok alımı", sale: "Satış", cancelled: "Satış iptali", returned: "Satılabilir iade",
+  purchase: "Stok alımı", sale: "Satış", cancelled: "Satış iptali", returned: "Satılabilir iade", adjustment: "Stok düzeltmesi",
 };
 const expenseCategories = ["Ambalaj", "Kargo", "Malzeme", "Pazarlama", "Diğer"];
 const cashLabels: Record<CashKind, string> = { purchase: "Stok ödemesi", receipt: "Tahsilat", expense: "Gider" };
@@ -259,9 +261,14 @@ function StockPage({ data, open }: { data: Shop; open: (editor: Editor) => void 
       <Panel title="Toptan alımlar">{data.purchases.length ? <div className="list">{data.purchases.map(purchase =>
         <details className="purchase-details" key={purchase.id}>
           <summary><span><strong>{purchase.name}</strong><br /><span className="subtle">{dateLabel(purchase.date)} · {money(purchase.total)}</span></span><span className={"pill " + (purchase.paymentDate ? "ok" : "warning")}>{purchase.paymentDate ? "Ödendi" : "Ödeme bekliyor"}</span></summary>
-          <Table headers={["Ürün", "Adet", "Birim maliyet", "Toplam"]} rows={purchase.lines.map(line => [line.productName, line.quantity, money(line.unitCost), money(line.quantity * line.unitCost)])} />
+          <Table headers={["Ürün", "Alınan adet", "Kalan adet", "Birim maliyet", "Toplam"]} rows={purchase.lines.map(line => [
+            line.productName, line.quantity, line.quantity - (line.usedQuantity ?? 0), money(line.unitCost), money(line.quantity * line.unitCost),
+          ])} />
           <div className="row"><p className="subtle">Ekleyen {getMember(data.users, purchase.actorId)}{purchase.paymentDate && " · Ödeyen " + getMember(data.users, purchase.payerId) + " · " + dateLabel(purchase.paymentDate)}</p>
-          {!purchase.paymentDate && <div className="actions"><button onClick={() => open({ type: "purchase-payment", purchase })}>Ödeme gir</button></div>}</div>
+          <div className="actions">
+            <button onClick={() => open({ type: "purchase-edit", purchase })}>Düzenle</button>
+            {!purchase.paymentDate && <button onClick={() => open({ type: "purchase-payment", purchase })}>Ödeme gir</button>}
+          </div></div>
         </details>,
       )}</div> : <Empty>Henüz toptan alım kaydı yok.</Empty>}</Panel>
       <Panel title="Stok hareketleri" meta={<div className="form"><label>Ürün<select value={productId} onChange={event => setProductId(event.target.value)}><option value="">Tüm ürünler</option>{data.products.map(product => <option key={product.id} value={product.id}>{product.name}</option>)}</select></label></div>}>
@@ -513,12 +520,16 @@ function ProductForm({ product, users, busy, save }: { product?: Product; users:
   </form>;
 }
 type Save = (event: FormEvent<HTMLFormElement>, action: string, build: (data: FormData) => unknown) => void;
-type DraftLine = { id: number; productId: string; quantity: string; priceOverride: string | null };
-function LinesForm({ mode, shop, user, busy, save, addProduct }: { mode: "purchase" | "order"; shop: Shop; user: Member; busy: boolean; save: Save; addProduct: () => void }) {
+type DraftLine = { id: number; productId: string; quantity: string; priceOverride: string | null; original?: Purchase["lines"][number] };
+function LinesForm({ mode, purchaseToEdit, shop, user, busy, save, addProduct }: {
+  mode: "purchase" | "order"; purchaseToEdit?: Purchase; shop: Shop; user: Member; busy: boolean; save: Save; addProduct: () => void;
+}) {
   const purchase = mode === "purchase";
   const products = shop.products.filter(product => purchase || product.stock > 0);
-  const [lines, setLines] = useState<DraftLine[]>([{ id: 1, productId: "", quantity: "1", priceOverride: null }]);
-  const nextLineId = useRef(2);
+  const [lines, setLines] = useState<DraftLine[]>(() => purchaseToEdit?.lines.map((line, index) => ({
+    id: index + 1, productId: String(line.productId), quantity: String(line.quantity), priceOverride: moneyInput(line.unitCost), original: line,
+  })) ?? [{ id: 1, productId: "", quantity: "1", priceOverride: null }]);
+  const nextLineId = useRef(lines.length + 1);
   const [platform, setPlatform] = useState<Platform>("Dolap");
   const [total, setTotal] = useState("");
   const [saleTotal, setSaleTotal] = useState("");
@@ -529,6 +540,9 @@ function LinesForm({ mode, shop, user, busy, save, addProduct }: { mode: "purcha
   const [paid, setPaid] = useState(false);
   const usesSaleTotal = !purchase && saleTotal.trim() !== "";
   const usesNet = netAfterShipping.trim() !== "";
+  const canAddLine = purchaseToEdit
+    ? lines.length < 100 && lines.every(line => line.productId) && products.some(product => !lines.some(line => line.productId === String(product.id)))
+    : lines.length < products.length;
   function updateLine(id: number, change: Partial<DraftLine>) {
     setLines(active => active.map(line => line.id === id ? { ...line, ...change } : line));
   }
@@ -550,15 +564,20 @@ function LinesForm({ mode, shop, user, busy, save, addProduct }: { mode: "purcha
     <Empty>{purchase ? "Stok alımı kaydetmek için önce bir ürün ekle." : "Satış eklemek için stokta en az bir ürün olmalı."}</Empty>
     {purchase && <div className="actions"><AddButton primary onClick={addProduct}>Ürün Ekle</AddButton></div>}
   </div>;
-  return <form className="form" onSubmit={event => save(event, mode, data => {
+  return <form className="form" onSubmit={event => save(event, purchaseToEdit ? "purchase-edit" : mode, data => {
     const date = field(data, "date");
     const baseLines = rows.map(({ line, price }) => ({ productId: Number(line.productId), quantity: Number(line.quantity),
       price: usesSaleTotal ? undefined : requiredMoney(price) }));
     if (purchase) {
+      const name = field(data, "name");
+      if (purchaseToEdit) return {
+        id: purchaseToEdit.id, revision: purchaseToEdit.revision, name, date, total: sum,
+        lines: baseLines.map(({ price, ...line }, index) => ({ ...line, unitCost: price, lotId: lines[index].original?.lotId })),
+      };
       const amount = requiredMoney(total);
       if (amount !== sum) throw new Error("Kutu toplamı, ürün satırlarının toplamıyla eşleşmeli.");
       return {
-        name: field(data, "name"), date, total: amount,
+        name, date, total: amount,
         lines: baseLines.map(({ price, ...line }) => ({ ...line, unitCost: price })),
         payment: paid ? { date: field(data, "paymentDate"), payerId: Number(field(data, "payerId")) } : undefined,
       };
@@ -573,30 +592,37 @@ function LinesForm({ mode, shop, user, busy, save, addProduct }: { mode: "purcha
     };
   })}>
     <div className="form-row">
-      {purchase ? <label>Kutu adı<input name="name" maxLength={120} required /></label> : <label>Platform<select name="platform" value={platform} onChange={event => setPlatform(event.target.value as Platform)}><option>Dolap</option><option>Gardrops</option></select></label>}
-      <DateField label={purchase ? "Alım tarihi" : "Satış tarihi"} />
+      {purchase ? <label>Kutu adı<input name="name" defaultValue={purchaseToEdit?.name} maxLength={120} required /></label> : <label>Platform<select name="platform" value={platform} onChange={event => setPlatform(event.target.value as Platform)}><option>Dolap</option><option>Gardrops</option></select></label>}
+      <DateField label={purchase ? "Alım tarihi" : "Satış tarihi"} value={purchaseToEdit?.date} />
     </div>
     {!purchase && <label>Sipariş numarası veya referans (isteğe bağlı)<input name="reference" maxLength={100} /></label>}
     {rows.map(({ line, product, listPrice, price }, index) => (
       <fieldset className="line-editor" key={line.id}>
         <legend>Ürün {index + 1}</legend>
-        <label>Ürün seç<select value={line.productId} onChange={event => updateLine(line.id, { productId: event.target.value, quantity: "1", priceOverride: null })} required>
+        <label>Ürün seç<select value={line.productId} disabled={line.original?.hasSalesHistory} onChange={event => {
+          const productId = event.target.value;
+          updateLine(line.id, line.original ? { productId } : { productId, quantity: "1", priceOverride: null });
+        }} required>
           <option value="">Ürün seç</option>
           {products.filter(product => line.productId === String(product.id) || !lines.some(other => other.id !== line.id && other.productId === String(product.id))).map(product => <option key={product.id} value={product.id}>{product.name}{purchase ? "" : " · " + product.stock + " adet"}</option>)}
         </select></label>
         <div className="form-row">
-          <label>Adet<input type="number" min={1} max={purchase ? undefined : product?.stock} inputMode="numeric" step={1} value={line.quantity} onChange={event => updateLine(line.id, { quantity: event.target.value })} required /></label>
-          {!usesSaleTotal && <label>{purchase ? "Birim maliyet (₺)" : "Anlaşılan birim fiyat (₺)"}<input inputMode="decimal" value={price} onChange={event => updateLine(line.id, { priceOverride: event.target.value })} maxLength={13} placeholder="0,00" required /></label>}
+          <label>{purchaseToEdit ? "Alınan adet" : "Adet"}<input type="number" min={Math.max(1, line.original?.usedQuantity ?? 0)} max={purchase ? 100000 : product?.stock} inputMode="numeric" step={1} value={line.quantity} onChange={event => updateLine(line.id, { quantity: event.target.value })} required /></label>
+          {!usesSaleTotal && <label>{purchase ? "Birim maliyet (₺)" : "Anlaşılan birim fiyat (₺)"}<input inputMode="decimal" value={price} readOnly={line.original?.hasSalesHistory} onChange={event => updateLine(line.id, { priceOverride: event.target.value })} maxLength={13} placeholder="0,00" required /></label>}
         </div>
+        {line.original?.hasSalesHistory && <p className="subtle">Satışlarda kullanılan {line.original.usedQuantity} adet · Ürün ve birim maliyet satış geçmişi nedeniyle sabit.</p>}
         {!purchase && listPrice !== undefined && <p className="subtle">{platform} liste fiyatı {money(listPrice)}</p>}
-        {lines.length > 1 && <div className="actions"><button className="danger" type="button" onClick={() => setLines(active => active.filter(other => other.id !== line.id))}>Satırı kaldır</button></div>}
+        {lines.length > 1 && !line.original?.hasSalesHistory && <div className="actions"><button className="danger" type="button" onClick={() => setLines(active => active.filter(other => other.id !== line.id))}>Satırı kaldır</button></div>}
       </fieldset>
     ))}
-    {lines.length < products.length && <div className="actions"><button type="button" onClick={() => {
+    {canAddLine && <div className="actions"><button type="button" onClick={() => {
       const id = nextLineId.current++;
       setLines(active => [...active, { id, productId: "", quantity: "1", priceOverride: null }]);
     }}><Plus className="icon" aria-hidden="true" />Bir ürün daha ekle</button></div>}
-    {purchase ? <>
+    {purchaseToEdit ? <div className="form-totals" aria-live="polite">
+      <div className="inline"><span>Alım toplamı</span><strong>{money(sum)}</strong></div>
+      {purchaseToEdit.paymentDate && <p className="subtle">Bu alımın kasadaki ödeme tutarı da güncellenir.</p>}
+    </div> : purchase ? <>
       <label>Faturadaki kutu toplamı (₺)<input inputMode="decimal" value={total} onChange={event => setTotal(event.target.value)} maxLength={13} placeholder="0,00" required /></label>
       <div className="form-totals" aria-live="polite"><div className="inline"><span>Satır toplamı</span><strong>{money(sum)}</strong></div>
         {Number.isFinite(totalDifference) && <div className="inline"><span>{totalDifference ? "Fark" : "Kutu toplamı eşleşiyor"}</span>{totalDifference ? <strong className="danger">{money(totalDifference)}</strong> : <Check className="icon" aria-hidden="true" />}</div>}
@@ -626,7 +652,7 @@ function LinesForm({ mode, shop, user, busy, save, addProduct }: { mode: "purcha
         <div className="inline"><span>Paketleme sonrası kalan</span><strong>{Number.isFinite(afterPacking) ? money(afterPacking) : "—"}</strong></div>
       </div>
     </>}
-    <SaveButton busy={busy}>{purchase ? "Stok alımını kaydet" : "Satışı kaydet"}</SaveButton>
+    <SaveButton busy={busy}>{purchaseToEdit ? "Değişiklikleri kaydet" : purchase ? "Stok alımını kaydet" : "Satışı kaydet"}</SaveButton>
   </form>;
 }
 function orderProducts(order: Order) {
@@ -690,6 +716,7 @@ function getTitle(editor: Editor) {
   switch (editor.type) {
     case "product": return editor.product ? "Ürünü düzenle" : "Ürün ekle";
     case "purchase": return "Stok alımı ekle";
+    case "purchase-edit": return "Stok alımını düzenle";
     case "order": return "Satış ekle";
     case "expense": return editor.expense ? "Gideri düzenle" : "Gider ekle";
     case "cash-payment-edit": return editor.payment.kind === "receipt" ? "Tahsilatı düzenle" : "Stok ödemesini düzenle";
@@ -711,6 +738,8 @@ function EditorBody({ editor, shop, user, busy, save, open }: { editor: Editor; 
     case "purchase":
     case "order":
       return <LinesForm mode={editor.type} shop={shop} user={user} busy={busy} save={save} addProduct={() => open({ type: "product" })} />;
+    case "purchase-edit":
+      return <LinesForm mode="purchase" purchaseToEdit={editor.purchase} shop={shop} user={user} busy={busy} save={save} addProduct={() => open({ type: "product" })} />;
     case "order-detail":
       return <OrderDetail order={editor.order} users={shop.users} audit={shop.audit} open={open} />;
     case "settings":
