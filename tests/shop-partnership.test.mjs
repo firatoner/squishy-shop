@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { calculatePartnership } from "../lib/shop-partnership.ts";
-import { calculatePerformance } from "../lib/shop-performance.ts";
+import { calculatePerformance, comparePlatforms, restockSuggestions } from "../lib/shop-performance.ts";
 
 const from = "2026-11-01";
 const through = "2026-11-30";
@@ -101,4 +101,30 @@ test("performance uses active sales and the oldest remaining lot for stock age",
   assert.deepEqual(result.map(row => [row.quantity, row.profit, row.stock, row.daysInStock]), [[4, 41000, 3, 8], [2, 24000, 0, 0], [0, 0, 2, 8]]);
   assert.equal(result.reduce((sum, row) => sum + row.profit, 0), 65000);
   assert.deepEqual(calculatePerformance(data, "2026-12-01", "2026-12-31", "2026-11-18").map(row => row.quantity), [0, 0, 0]);
+});
+
+test("platform comparison reconciles direct nets, fees and costs and excludes closed orders from totals", () => {
+  const platformSale = { ...sale, platform: "Dolap", gross: 100000, cost: 20000 };
+  const otherPlatform = { ...platformSale, platform: "Gardrops", netAfterShipping: 87500, platformFee: 0, shipping: 0 };
+  const compared = comparePlatforms([
+    platformSale, otherPlatform, { ...platformSale, status: "cancelled" }, { ...otherPlatform, status: "returned" },
+    { ...platformSale, date: "2026-10-31" }, { ...otherPlatform, date: "2026-12-01" },
+  ], from, through);
+  assert.deepEqual(compared.map(row => [row.platform, row.orders, row.quantity, row.gross, row.deductions, row.profit, row.averageBasket, row.cancelled, row.returned]),
+    [["Dolap", 1, 6, 100000, 13000, 65000, 100000, 1, 0], ["Gardrops", 1, 6, 100000, 12500, 65500, 100000, 0, 1]]);
+  const empty = comparePlatforms([], from, through);
+  assert.ok(empty.every(row => row.profit === 0 && row.margin === null && row.averageBasket === null));
+});
+
+test("restock uses an inclusive rolling window, exact target rounding and current stock", () => {
+  const data = { products: [{ id: 1, name: "Peach", stock: 2 }, { id: 2, name: "No sales", stock: 0 }], orders: [
+    { ...sale, date: "2026-11-18", lines: [{ ...sale.lines[0], quantity: 12 }] },
+    { ...sale, date: "2026-10-20", lines: [{ ...sale.lines[0], quantity: 3 }] },
+    { ...sale, date: "2026-10-19" }, { ...sale, date: "2026-11-19" },
+    { ...sale, status: "cancelled" }, { ...sale, status: "returned" },
+  ] };
+  const result = restockSuggestions(data, "2026-11-18", 30, 14);
+  assert.deepEqual(result.map(row => [row.quantity, row.targetStock, row.suggestedQuantity, row.daysRemaining]), [[15, 7, 5, 4], [0, 0, 0, null]]);
+  assert.equal(restockSuggestions(data, "2026-11-18", 30, 60)[0].suggestedQuantity, 28);
+  assert.equal(restockSuggestions({ ...data, products: [{ id: 1, name: "Peach", stock: 100 }] }, "2026-11-18", 30, 14)[0].suggestedQuantity, 0);
 });

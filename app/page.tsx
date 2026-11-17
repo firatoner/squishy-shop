@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { Activity, Archive, BarChart3, Boxes, CalendarDays, Check, Download, Heart, House, LogOut, Plus, Receipt, Settings, ShoppingBag, Sparkles, Users, Wallet, X } from "lucide-react";
 import { calculatePartnership, type PartnerTransfer } from "@/lib/shop-partnership";
-import { calculatePerformance } from "@/lib/shop-performance";
+import { calculatePerformance, comparePlatforms, restockSuggestions } from "@/lib/shop-performance";
 
 type Member = { id: number; username: string; name: string };
 type Session = { user: Member | null; needsSetup: boolean };
@@ -37,7 +37,7 @@ type Shop = {
   settings: { defaultPacking: number };
   summary: { month: string; gross: number; collected: number; profit: number; cashBalance: number };
 };
-type PageName = "dashboard" | "products" | "orders" | "stock" | "cash" | "partners" | "performance" | "reports" | "settings";
+type PageName = "dashboard" | "products" | "orders" | "stock" | "cash" | "partners" | "performance" | "platforms" | "restock" | "reports" | "settings";
 type Editor =
   | { type: "product"; product?: Product }
   | { type: "purchase" | "order" }
@@ -61,6 +61,8 @@ const sections = [
   { id: "cash", label: "Kasa ve Giderler", Icon: Wallet },
   { id: "partners", label: "Ortaklar", Icon: Users },
   { id: "performance", label: "Ürün Performansı", Icon: BarChart3 },
+  { id: "platforms", label: "Platform Karşılaştırması", Icon: ShoppingBag },
+  { id: "restock", label: "Stok Yenileme", Icon: Boxes },
   { id: "reports", label: "Raporlar", Icon: Download },
   { id: "settings", label: "Ayarlar", Icon: Settings },
 ] as const;
@@ -407,6 +409,68 @@ function PerformancePage({ data }: { data: Shop }) {
               row.stock, row.stock ? row.daysInStock + " gün" : "—"])} /> : <Empty>Bu seçime uygun ürün yok.</Empty>}
         </Panel>
       </> : <p className="form-error" role="alert">Geçerli bir başlangıç ve bitiş tarihi seç.</p>}
+    </div>
+  </>;
+}
+function PlatformsPage({ data }: { data: Shop }) {
+  const [from, setFrom] = useState(data.summary.month + "-01");
+  const [through, setThrough] = useState(today);
+  const valid = from !== "" && through !== "" && from <= through;
+  const platforms = valid ? comparePlatforms(data.orders, from, through) : [];
+  return <>
+    <SectionHeader title="Platform Karşılaştırması" description="Dolap ve Gardrops satışlarını, masraflarını ve kârlarını karşılaştır." />
+    <div className="stack">
+      <div className="form form-row">
+        <label>Başlangıç<input type="date" value={from} onChange={event => setFrom(event.target.value)} /></label>
+        <label>Bitiş<input type="date" value={through} onChange={event => setThrough(event.target.value)} /></label>
+      </div>
+      {valid ? <Panel title="Dönem karşılaştırması">
+        <p className="subtle">Tutarlar paketlenecek ve paketlenmiş satışları kapsar. Kâr hesabında kesinti, kargo, paketleme ve stok maliyeti düşülür.</p>
+        <Table headers={["Platform", "Sipariş", "Satılan adet", "Satış toplamı", "Kesinti + kargo", "Paketleme", "Ürün maliyeti", "Kâr", "Kâr oranı", "Ortalama sepet", "İptal", "İade"]}
+          rows={platforms.map(platform => [
+            platform.platform, platform.orders, platform.quantity, money(platform.gross), money(platform.deductions),
+            money(platform.packing), money(platform.cost), money(platform.profit),
+            platform.margin === null ? "—" : "%" + platform.margin.toLocaleString("tr-TR", { maximumFractionDigits: 1 }),
+            platform.averageBasket === null ? "—" : money(platform.averageBasket), platform.cancelled, platform.returned,
+          ])} />
+        <p className="subtle">Kesinti ve kargo, elle girilen net tutarlarda toplam farktan hesaplanır. Genel kasa giderleri bu karşılaştırmaya dahil edilmez.</p>
+      </Panel> : <p className="form-error" role="alert">Geçerli bir başlangıç ve bitiş tarihi seç.</p>}
+    </div>
+  </>;
+}
+function RestockPage({ data }: { data: Shop }) {
+  const [windowDays, setWindowDays] = useState("30");
+  const [targetDays, setTargetDays] = useState("14");
+  const [query, setQuery] = useState("");
+  const [onlyNeeded, setOnlyNeeded] = useState(false);
+  const window = Number(windowDays);
+  const target = Number(targetDays);
+  const valid = Number.isInteger(window) && window >= 1 && window <= 365 && Number.isInteger(target) && target >= 1 && target <= 365;
+  const suggestions = valid ? restockSuggestions(data, today(), window, target) : [];
+  const shown = suggestions.filter(row =>
+    (!onlyNeeded || row.suggestedQuantity > 0) && row.name.toLocaleLowerCase("tr-TR").includes(query.trim().toLocaleLowerCase("tr-TR")));
+  shown.sort((a, b) => b.suggestedQuantity - a.suggestedQuantity || b.quantity - a.quantity || a.name.localeCompare(b.name, "tr"));
+  const needed = suggestions.filter(row => row.suggestedQuantity > 0);
+  return <>
+    <SectionHeader title="Stok Yenileme" description="Son satış hızına göre hangi üründen kaç adet alacağını planla." />
+    <div className="stack">
+      <div className="form form-row">
+        <label>İncelenecek son gün sayısı<input type="number" inputMode="numeric" min={1} max={365} step={1} value={windowDays} onChange={event => setWindowDays(event.target.value)} /></label>
+        <label>Hedef stok süresi (gün)<input type="number" inputMode="numeric" min={1} max={365} step={1} value={targetDays} onChange={event => setTargetDays(event.target.value)} /></label>
+      </div>
+      {valid ? <Panel title="Yenileme önerileri" meta={<span>{needed.length} ürün · {needed.reduce((sum, row) => sum + row.suggestedQuantity, 0)} adet öneriliyor</span>}>
+        <p className="subtle">Bugün dahil son {window} gündeki satış hızıyla {target} günlük hedef stok hesaplanır. İptal ve iadeler çıkarılır. Öneri, bu dönemde stokta bulunamadığı günleri de kapsayan ortalamaya dayanır.</p>
+        <div className="form form-row">
+          <label>Ürün ara<input type="search" value={query} onChange={event => setQuery(event.target.value)} /></label>
+          <label className="check"><input type="checkbox" checked={onlyNeeded} onChange={event => setOnlyNeeded(event.target.checked)} />Yalnızca yenilenecekler</label>
+        </div>
+        {shown.length ? <Table headers={["Ürün", "Güncel stok", "Son " + window + " günde satış", "Günlük ortalama", "Tahmini kalan süre", "Hedef stok", "Alım önerisi"]}
+          rows={shown.map(row => [
+            row.name, row.stock, row.quantity, row.dailySales.toLocaleString("tr-TR", { maximumFractionDigits: 2 }),
+            row.daysRemaining === null ? "Satış verisi yok" : row.daysRemaining.toLocaleString("tr-TR", { maximumFractionDigits: 1 }) + " gün",
+            row.quantity ? row.targetStock : "—", row.suggestedQuantity ? row.suggestedQuantity + " adet" : "—",
+          ])} /> : <Empty>Bu seçime uygun ürün yok.</Empty>}
+      </Panel> : <p className="form-error" role="alert">Gün sayılarını 1–365 arasında tam sayı olarak gir.</p>}
     </div>
   </>;
 }
@@ -950,6 +1014,8 @@ function visiblePage(page: PageName, shop: Shop, open: (editor: Editor) => void)
     case "cash": return <CashPage data={shop} open={open} />;
     case "partners": return <PartnersPage data={shop} open={open} />;
     case "performance": return <PerformancePage data={shop} />;
+    case "platforms": return <PlatformsPage data={shop} />;
+    case "restock": return <RestockPage data={shop} />;
     case "reports": return <Reports month={shop.summary.month} />;
     case "settings": return <SettingsPage shop={shop} open={open} />;
   }
