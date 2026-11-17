@@ -1,3 +1,4 @@
+import { budgetPurchases, lastYear, stockoutDays, supplierStats } from "../lib/shop-planning.ts";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { boughtTogether, tiedCapital, purchaseRecovery, previousPeriod, periodSummary } from "../lib/shop-analytics.ts";
@@ -54,4 +55,41 @@ test("period comparison uses equal duration across leap dates and includes stock
   }, from, through);
   assert.deepEqual([result.orders, result.quantity, result.gross, result.profit, result.collected, result.averageBasket], [1, 5, 10000, 6600, 9000, 10000]);
   assert.ok(Math.abs(result.returnRate - 100 / 3) < 0.0000001);
+});
+
+test("supplier quality uses inspected deliveries and delivery time ignores missing order dates", () => {
+  const lines = [{ productId: 1, quantity: 8, unitCost: 100 }];
+  const [row] = supplierStats([
+    { supplier: "A", lines, orderedOn: "2026-10-01", date: "2026-10-05", rejectedUnits: 2 },
+    { supplier: "a", lines, date: "2026-10-06", rejectedUnits: null },
+    { supplier: "A", lines, date: "2026-10-07", rejectedUnits: 0 },
+  ]);
+  assert.deepEqual(row, { name: "A", purchases: 3, checked: 2, received: 18, rejected: 2, timed: 1, days: 4 });
+});
+
+test("stockout days use end-of-day stock and begin at the first acquired stock", () => {
+  const moves = [
+    { productId: 1, date: "2026-10-03", quantity: 2, kind: "purchase" },
+    { productId: 1, date: "2026-10-05", quantity: -2, kind: "sale" },
+    { productId: 1, date: "2026-10-07", quantity: 1, kind: "purchase" },
+  ];
+  const result = stockoutDays([{ id: 1, stock: 1 }, { id: 2, stock: 0 }], moves, "2026-10-06", 7);
+  assert.equal(result.get(1), 2);
+  assert.equal(result.get(2), null);
+  assert.equal(lastYear("2024-02-29"), "2023-02-28");
+});
+
+test("budget list respects quantity tiers and keeps prioritized purchases within available money", () => {
+  const suggestions = [
+    { id: 2, name: "Other", stock: 1, dailySales: 10, suggestedQuantity: 3 },
+    { id: 1, name: "Out", stock: 0, dailySales: 2, suggestedQuantity: 10 },
+  ];
+  const prices = [
+    { productId: 1, supplier: "A", minimumQuantity: 1, unitCost: 120 },
+    { productId: 1, supplier: "A", minimumQuantity: 10, unitCost: 80 },
+  ];
+  const purchases = [{ date: "2026-10-01", supplier: "B", lines: [{ productId: 2, quantity: 5, unitCost: 50 }] }];
+  const plan = budgetPurchases(suggestions, purchases, prices, 875, "2026-10-10");
+  assert.deepEqual(plan.rows.map(row => [row.id, row.selected.quantity, row.selected.total]), [[1, 10, 800], [2, 1, 50]]);
+  assert.equal(plan.remaining, 25);
 });

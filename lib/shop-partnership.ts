@@ -17,6 +17,8 @@ type Sale = {
   shipping: number;
   netAfterShipping?: number | null;
   packing: number;
+  shippingPayerId?: number | null;
+  packingPayerId?: number | null;
   receiptDate: string | null;
   receiptAmount: number | null;
   recipientId: number | null;
@@ -27,7 +29,7 @@ export type PartnerTransfer = { id: number; senderId: number; recipientId: numbe
 export type PurchasePayment = { payerId: number; amount: number; date: string };
 export type StockLoss = { id: number; productId: number; productName: string; quantity: number; date: string; reason: string; note: string;
   lines: { purchaseId: number; quantity: number; unitCost: number; firstPartnerShare: number | null }[] };
-type PaidPurchase = { id: number; total?: number; paymentDate: string | null; payerId: number | null; payments?: PurchasePayment[] };
+type PaidPurchase = { id: number; total?: number; openingPayerId?: number | null; date?: string; paymentDate: string | null; payerId: number | null; payments?: PurchasePayment[] };
 
 type PartnershipData = {
   users: { id: number }[];
@@ -83,6 +85,11 @@ function reimbursements(purchases: Map<number, PaidPurchase>, costs: Map<number,
   let latest = "";
   for (const [purchaseId, cost] of costs) {
     const purchase = purchases.get(purchaseId);
+    if (purchase?.openingPayerId != null && purchase.date && purchase.date <= through) {
+      paid.set(purchase.openingPayerId, (paid.get(purchase.openingPayerId) ?? 0) + cost);
+      if (purchase.date > latest) latest = purchase.date;
+      continue;
+    }
     if (!purchase) return null;
     const payments = purchase.payments?.length ? purchase.payments
       : purchase.payerId !== null && purchase.paymentDate !== null ? [{ payerId: purchase.payerId, date: purchase.paymentDate, amount: purchase.total ?? 1 }] : [];
@@ -111,7 +118,7 @@ export function calculatePartnership(data: PartnershipData, from: string, throug
       id: member.id,
       receipts: movements.reduce((sum, entry) => sum + Math.max(0, entry.amount), 0),
       stockPaid: movements.filter(entry => entry.kind === "purchase").reduce((sum, entry) => sum - entry.amount, 0),
-      expensesPaid: movements.filter(entry => entry.kind === "expense").reduce((sum, entry) => sum - entry.amount, 0),
+      expensesPaid: movements.filter(entry => entry.kind === "expense" || entry.kind === "sale-cost").reduce((sum, entry) => sum - entry.amount, 0),
       realizedShare: 0,
     };
   });
@@ -125,11 +132,22 @@ export function calculatePartnership(data: PartnershipData, from: string, throug
 
   for (const order of data.orders) {
     const collected = order.receiptDate !== null && order.receiptDate <= through && order.receiptAmount !== null;
+    const groups = productGroups(order.lines);
+    const directCosts = (order.shippingPayerId != null ? order.shipping : 0) + (order.packingPayerId != null ? order.packing : 0);
+    const firstPaid = (order.shippingPayerId === first.id ? order.shipping : 0) + (order.packingPayerId === first.id ? order.packing : 0);
     if (order.status === "returned" || order.status === "cancelled") {
       if (collected) excludedReceipts += order.receiptAmount!;
+      if (directCosts && order.date <= through && groups.length && groups.every(group => group.share !== null)) {
+        const costs = allocate(directCosts, groups.map(group => group.quantity));
+        const firstCost = costs.reduce((sum, amount, i) => sum + roundedRatio(amount, groups[i].share!, 100), 0);
+        firstBalance += firstPaid - firstCost;
+        if (inPeriod(order.date)) {
+          partners[0].realizedShare -= firstCost;
+          partners[1].realizedShare -= directCosts - firstCost;
+        }
+      }
       continue;
     }
-    const groups = productGroups(order.lines);
     if (!groups.length) continue;
     const hasGross = groups.some(group => group.gross > 0);
     const weights = groups.map(group => hasGross ? group.gross : group.quantity);
@@ -168,7 +186,8 @@ export function calculatePartnership(data: PartnershipData, from: string, throug
       continue;
     }
     const eligibleDate = stockPayments.latest > order.receiptDate! ? stockPayments.latest : order.receiptDate!;
-    const receipts = allocate(order.receiptAmount!, weights);
+    const receipts = allocate(order.receiptAmount! - directCosts, weights);
+    firstBalance += firstPaid;
     firstBalance += (stockPayments.paid.get(first.id) ?? 0) - (order.recipientId === first.id ? order.receiptAmount! : 0);
     groups.forEach((group, i) => {
       const profit = receipts[i] - group.cost;

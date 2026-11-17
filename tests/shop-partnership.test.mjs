@@ -154,3 +154,24 @@ test("trend totals agree with product results including loss costs", () => {
   assert.equal(trend.reduce((sum, point) => sum + point.gross, 0), 100000);
   assert.equal(trend.reduce((sum, point) => sum + point.profit, 0), 64000);
 });
+
+test("opening inventory returns historical cost and sale expenses reimburse their actual payers", () => {
+  const figures = calculatePartnership({
+    users: [{ id: 1 }, { id: 2 }],
+    purchases: [{ id: 1, date: "2026-10-05", total: 1000, openingPayerId: 2, paymentDate: null, payerId: null, payments: [] }],
+    orders: [{ id: 1, date: "2026-10-06", status: "packed", receiptDate: "2026-10-06", receiptAmount: 7700, recipientId: 1,
+      platformFee: 0, shipping: 700, shippingPayerId: 2, packing: 300, packingPayerId: 1, netAfterShipping: 7000,
+      lines: [{ productId: 1, productName: "Peach", purchaseId: 1, quantity: 1, agreedPrice: 9000, unitCost: 1000, firstPartnerShare: 100 }] }],
+    cash: [
+      { kind: "receipt", date: "2026-10-06", amount: 7700, memberId: 1 },
+      { kind: "sale-cost", date: "2026-10-06", amount: -700, memberId: 2 },
+      { kind: "sale-cost", date: "2026-10-06", amount: -300, memberId: 1 },
+    ],
+    expenses: [], partnerTransfers: [],
+  }, "2026-10-01", "2026-10-31");
+  assert.equal(figures.awaitingStockPayments.size, 0);
+  assert.equal(figures.firstBalance, -1700);
+  assert.equal(figures.partners[0].realizedShare, 5700);
+  assert.deepEqual(figures.partners.map(row => row.stockPaid), [0, 0]);
+  assert.deepEqual(figures.partners.map(row => row.expensesPaid), [300, 700]);
+});

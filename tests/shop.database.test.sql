@@ -137,5 +137,86 @@ begin
 end;
 $fixture$;
 
+do $planning$
+declare
+  actor integer := (select min(id) from squishy_shop.members);
+  partner integer := (select max(id) from squishy_shop.members);
+  balance bigint := (public.shop_read('state','{}')->'summary'->>'cashBalance')::bigint;
+  product integer;
+  purchase integer;
+  lot integer;
+  sale integer;
+  undo_id integer;
+  result jsonb;
+  key text;
+  payload jsonb;
+  error_status text;
+begin
+  product := (public.shop_write(actor,'product','{"name":"Catalog item","dolapListPrice":9000,"gardropsListPrice":8000,"lowThreshold":1}')->>'id')::integer;
+  payload := jsonb_build_object('date','2026-10-01','name','Older stock','total',1000,'lines',
+    jsonb_build_array(jsonb_build_object('productId',product,'quantity',1,'unitCost',1000,'firstPartnerShare',100)));
+  perform public.shop_write(actor,'purchase',payload);
+
+  purchase := (public.shop_write(actor,'purchase',payload || jsonb_build_object('date','2026-10-05','name','Opening stock',
+    'openingPayerId',partner,'supplier','Sample supplier','orderedOn','2026-10-02','rejectedUnits',2))->>'id')::integer;
+  select id into lot from squishy_shop.lots where purchase_id=purchase;
+  result := public.shop_read('state','{}');
+  assert (result->'summary'->>'cashBalance')::bigint = balance;
+  assert result->'purchases' @> jsonb_build_array(jsonb_build_object('id',purchase,'openingPayerId',partner,
+    'supplier','Sample supplier','orderedOn','2026-10-02','rejectedUnits',2,'paymentDate',null)),
+    format('Opening inventory fields: %s',result->'purchases');
+  begin
+    perform public.shop_inventory_write(actor,'purchase-payment',jsonb_build_object('id',purchase,'date','2026-10-06','payerId',actor));
+    raise exception 'Opening inventory created new cash expense';
+  exception when sqlstate 'P0001' then
+    get stacked diagnostics error_status = pg_exception_detail;
+    assert error_status = '409';
+  end;
+
+  payload := jsonb_build_object('date','2026-10-06','platform','Dolap','reference','QA-planning','platformFee',0,'shipping',700,'packing',300,
+    'shippingPayerId',partner,'packingPayerId',actor,'netAfterShipping',7000,'saleTotal',9000,'lines',
+    jsonb_build_array(jsonb_build_object('productId',product,'quantity',1,'lotId',lot)));
+  sale := (public.shop_write(actor,'order',payload)->>'id')::integer;
+  result := public.shop_read('state','{}');
+  assert result->'orders' @> jsonb_build_array(jsonb_build_object('id',sale,'profit',5700,'expectedReceipt',7700,
+    'lines',jsonb_build_array(jsonb_build_object('lotId',lot,'purchaseId',purchase))));
+  assert (result->'summary'->>'cashBalance')::bigint = balance-1000;
+
+  begin
+    perform public.shop_write(actor,'order',payload);
+    raise exception 'Explicit lot silently fell back to older stock';
+  exception when sqlstate 'P0001' then
+    get stacked diagnostics error_status = pg_exception_detail;
+    assert error_status = '409';
+  end;
+  select max(id) into undo_id from squishy_shop.audit;
+  begin
+    perform public.shop_write(partner,'undo',jsonb_build_object('auditId',undo_id));
+    raise exception 'Undo accepted a different actor';
+  exception when sqlstate 'P0001' then
+    get stacked diagnostics error_status = pg_exception_detail;
+    assert error_status = '409';
+  end;
+  perform public.shop_write(actor,'undo',jsonb_build_object('auditId',undo_id));
+  assert (select remaining from squishy_shop.lots where id=lot) = 1;
+  assert (public.shop_read('state','{}')->'summary'->>'cashBalance')::bigint = balance;
+  begin
+    perform public.shop_write(actor,'undo',jsonb_build_object('auditId',undo_id));
+    raise exception 'Undo accepted a stale audit revision';
+  exception when sqlstate 'P0001' then
+    get stacked diagnostics error_status = pg_exception_detail;
+    assert error_status = '409';
+  end;
+
+  perform public.shop_write(actor,'catalog-settings','{"enabled":true}');
+  key := public.shop_read('state','{}')->>'catalogKey';
+  assert public.shop_read('catalog',jsonb_build_object('key',key)) @> jsonb_build_array(
+    jsonb_build_object('id',product,'name','Catalog item','dolapListPrice',9000,'gardropsListPrice',8000,'hasPhoto',false));
+  assert public.shop_read('catalog','{"key":"incorrect"}') is null;
+  perform public.shop_write(actor,'catalog-settings','{"enabled":false}');
+  assert public.shop_read('catalog',jsonb_build_object('key',key)) is null;
+end;
+$planning$;
+
 rollback;
 select 'Squishy Shop database fixture passed; fixture rows rolled back.' as result;

@@ -189,3 +189,10 @@ button:disabled { cursor: not-allowed; }
   .squishy-pink { right: 26%; bottom: 37%; }
   .squishy-cream { right: 8%; bottom: 65%; }
 }
+.catalog-page { max-width: 1080px; margin: 0 auto; padding: clamp(1rem, 4vw, 3rem); }
+.catalog-page .product-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr)); gap: 1rem; }
+.catalog-item img { display: block; width: 100%; aspect-ratio: 1; object-fit: contain; border-radius: .75rem; }
+.catalog-item dl { margin-bottom: 0; }
+.catalog-item dl div { display: flex; justify-content: space-between; gap: .75rem; }
+.catalog-item dd { margin: 0; font-weight: 700; }
+.undo-action { margin-bottom: 1rem; }

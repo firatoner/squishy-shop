@@ -141,13 +141,20 @@ function mutation(action: string, input: Input) {
       }));
       const total = money(input.total, "Koli toplamı", 1);
       if (lines.reduce((sum, line) => sum + line.quantity * line.unitCost, 0) !== total) fail("Ürün maliyetleri koli toplamıyla eşleşmeli.");
-      const purchase = { name: strings(input.name, "Koli adı", 120), date: date(input.date), total, lines };
+      const delivery = date(input.date);
+      const orderedOn = input.orderedOn === undefined ? undefined : input.orderedOn === null ? null : date(input.orderedOn);
+      if (orderedOn && orderedOn > delivery) fail("Teslim tarihi sipariş tarihinden önce olamaz.");
+      const openingPayerId = input.openingPayerId == null ? undefined : id(input.openingPayerId);
+      const purchase = { name: strings(input.name, "Koli adı", 120), date: delivery, total, lines, openingPayerId, orderedOn,
+        supplier: input.supplier == null ? input.supplier : strings(input.supplier, "Tedarikçi", 120, false) || null,
+        rejectedUnits: input.rejectedUnits == null ? input.rejectedUnits : integer(input.rejectedUnits, "Kusurlu adet", 0, 100_000) };
       if (action === "purchase-edit") {
         const lotIds = lines.flatMap(line => line.lotId === undefined ? [] : [line.lotId]);
         if (new Set(lotIds).size !== lotIds.length) fail("Her alım satırını bir kez gönderin.");
         return { ...purchase, id: id(input.id), revision: integer(input.revision, "Kayıt sürümü", 0, 2_147_483_647) };
       }
       const payment = input.payment == null ? undefined : object(input.payment);
+      if (openingPayerId && payment) fail("Açılış stoğu için kasa ödemesi oluşturulamaz.");
       const normalized = payment && purchasePayment(payment);
       if (normalized?.payments && normalized.payments.reduce((sum, part) => sum + part.amount, 0) !== total) fail("Ortakların ödemeleri alım toplamıyla eşleşmeli.");
       return { ...purchase, payment: normalized };
@@ -177,18 +184,23 @@ function mutation(action: string, input: Input) {
       const saleTotal = input.saleTotal === undefined ? undefined : money(input.saleTotal, "Toplam satış tutarı");
       const lines = uniqueProducts(list(input.lines, line => ({
         productId: id(line.productId), quantity: quantity(line.quantity),
+        lotId: line.lotId === undefined ? undefined : id(line.lotId),
         agreedPrice: saleTotal === undefined ? money(line.agreedPrice, "Anlaşılan fiyat") : undefined,
       })));
       const gross = saleTotal ?? lines.reduce((sum, line) => sum + line.quantity * (line.agreedPrice ?? 0), 0);
       const netAfterShipping = input.netAfterShipping === undefined ? undefined
         : integer(input.netAfterShipping, "Kargo ve kesinti sonrası net tutar", -100_000_000, 100_000_000);
       if (netAfterShipping !== undefined && netAfterShipping > gross) fail("Net tutar satış toplamını aşamaz.");
-      return { platform, date: date(input.date), reference: strings(input.reference, "Sipariş numarası", 120, false), lines, saleTotal, netAfterShipping,
+      const shipping = netAfterShipping === undefined || input.shippingPayerId != null ? money(input.shipping, "Kargo") : 0;
+      if (netAfterShipping !== undefined && netAfterShipping + shipping > gross) fail("Net tutar ve cepten ödenen kargo satış toplamını aşamaz.");
+      const packing = money(input.packing, "Paketleme");
+      const payer = (value: unknown, amount: number) => !amount ? null : value == null ? value : id(value);
+      return { platform, date: date(input.date), shippingPayerId: payer(input.shippingPayerId, shipping),
+        packingPayerId: payer(input.packingPayerId, packing), reference: strings(input.reference, "Sipariş numarası", 120, false), lines, saleTotal, netAfterShipping,
         id: action === "order-edit" ? id(input.id) : undefined,
         revision: action === "order-edit" ? integer(input.revision, "Kayıt sürümü", 0, 2_147_483_647) : undefined,
         platformFee: netAfterShipping === undefined ? money(input.platformFee, "Platform kesintisi") : 0,
-        shipping: netAfterShipping === undefined ? money(input.shipping, "Kargo") : 0,
-        packing: money(input.packing, "Paketleme") };
+        shipping, packing };
     }
     case "order-status": {
       const status = input.status;
@@ -214,6 +226,16 @@ function mutation(action: string, input: Input) {
     }
     case "partner-transfer-delete":
       return { id: id(input.id) };
+    case "undo":
+      return { auditId: id(input.auditId) };
+    case "catalog-settings":
+      if (typeof input.enabled !== "boolean") fail("Katalog durumu geçersiz.");
+      return { enabled: input.enabled };
+    case "wholesale-price":
+    case "wholesale-price-delete":
+      return { productId: id(input.productId), supplier: strings(input.supplier, "Tedarikçi", 120),
+        minimumQuantity: quantity(input.minimumQuantity),
+        unitCost: action === "wholesale-price" ? money(input.unitCost, "Birim fiyat", 1) : undefined };
     case "settings":
       return { defaultPacking: money(input.defaultPacking, "Varsayılan paketleme") };
     case "expense":
@@ -311,9 +333,10 @@ type ExportState = {
   users: User[];
   orders: Array<{ id: number; date: string; reference: string; platform: string; status: string; actorId: number;
     gross: number; discount: number; platformFee: number; shipping: number; packing: number; cost: number;
-    netAfterShipping?: number | null;
+    netAfterShipping?: number | null; shippingPayerId?: number | null;
     expectedReceipt: number; profit: number; receiptDate: string | null; receiptAmount: number | null; recipientId: number | null;
     lines: Array<{ productName: string; quantity: number; listPrice: number; agreedPrice: number; unitCost: number; cost: number }> }>;
+  cash?: Array<{ kind: string; date: string; amount: number; memberId: number; actorId: number; description: string }>;
   stock: Array<{ date: string; kind: string; productName: string; quantity: number; unitCost: number; reference: string; actorId: number }>;
   expenses: Array<{ date: string; category: string; amount: number; payerId: number; actorId: number; note: string }>;
 };
@@ -354,8 +377,8 @@ async function exportCsv(url: URL, env: Environment) {
           dateCsv(order.date), order.platform, order.reference || String(order.id), csvStatus[order.status], name(order.actorId),
           line.productName, line.quantity, moneyCsv(line.listPrice), moneyCsv(line.agreedPrice), moneyCsv(line.cost),
           ...(index === 0 ? [moneyCsv(order.gross), moneyCsv(order.discount),
-            moneyCsv(order.netAfterShipping == null ? order.platformFee : null), moneyCsv(order.netAfterShipping == null ? order.shipping : null),
-            moneyCsv(order.packing), moneyCsv(order.cost), moneyCsv(order.netAfterShipping == null ? order.expectedReceipt : null), moneyCsv(order.profit),
+            moneyCsv(order.netAfterShipping == null ? order.platformFee : null), moneyCsv(order.netAfterShipping == null || order.shippingPayerId != null ? order.shipping : null),
+            moneyCsv(order.packing), moneyCsv(order.cost), moneyCsv(order.netAfterShipping == null || order.shippingPayerId != null ? order.expectedReceipt : null), moneyCsv(order.profit),
             dateCsv(order.receiptDate), moneyCsv(order.receiptAmount), name(order.recipientId), moneyCsv(order.netAfterShipping ?? null)] : Array<Cell>(12).fill(null)),
         ]),
       ),
@@ -372,6 +395,9 @@ async function exportCsv(url: URL, env: Environment) {
       ["Tarih", "Kategori", "Tutar (TL)", "Ödeyen", "Kaydeden", "Not"],
       ...state.expenses.filter((expense) => includes(expense.date)).map((expense) => [
         dateCsv(expense.date), expense.category, moneyCsv(expense.amount), name(expense.payerId), name(expense.actorId), expense.note,
+      ]),
+      ...(state.cash ?? []).filter(entry => entry.kind === "sale-cost" && includes(entry.date)).map(entry => [
+        dateCsv(entry.date), "Satış masrafı", moneyCsv(-entry.amount), name(entry.memberId), name(entry.actorId), entry.description,
       ]),
     ];
   }
@@ -390,6 +416,23 @@ export async function handleShopRequest(request: Request, action: string, env: E
       return await authenticate(action, await body(request), request, env);
     }
 
+    const url = new URL(request.url);
+    const read = <T>(p_action: string, p_data: Input) => env.rpc<T>("read", { p_action, p_data });
+    if (method === "GET" && (action === "catalog" || action === "catalog-photo")) {
+      const key = url.searchParams.get("key") ?? "";
+      if (!/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/.test(key)) throw new ShopError(404, "Katalog bulunamadı.");
+      if (action === "catalog") {
+        const catalog = await read("catalog", { key });
+        if (!catalog) throw new ShopError(404, "Katalog bulunamadı.");
+        return json(catalog);
+      }
+      const value = await read<string | null>("catalog-photo", { key, id: id(Number(url.searchParams.get("id"))) });
+      const photo = value ? parsePhoto(value) : null;
+      if (!photo) throw new ShopError(404, "Fotoğraf bulunamadı.");
+      return new Response(photo.bytes, {
+        headers: { "Content-Type": photo.type, "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff" },
+      });
+    }
     const tokenHash = getTokenHash(request, env);
     const auth = <T>(p_action: string, p_data: Input) => env.rpc<T>("auth", { p_action, p_data });
     if (method === "GET" && action === "session") {
@@ -404,8 +447,6 @@ export async function handleShopRequest(request: Request, action: string, env: E
     const session = await auth<{ user: User | null }>("session", { tokenHash });
     if (!session.user) throw new ShopError(401, "Oturum açmanız gerekiyor.");
 
-    const read = <T>(p_action: string, p_data: Input) => env.rpc<T>("read", { p_action, p_data });
-    const url = new URL(request.url);
     if (method === "GET") {
       if (action === "state") return json(await read("state", {}));
       if (action === "export") return await exportCsv(url, env);

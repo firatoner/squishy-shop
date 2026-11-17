@@ -2,11 +2,11 @@ import { allocate, type PurchasePayment, type StockLoss } from "./shop-partnersh
 import { comparePlatforms } from "./shop-performance.ts";
 
 type AnalysisOrder = Omit<Parameters<typeof comparePlatforms>[0][number], "lines"> & {
-  id: number; receiptDate: string | null; receiptAmount: number | null;
+  id: number; shippingPayerId?: number | null; receiptDate: string | null; receiptAmount: number | null;
   lines: { productId: number; productName: string; purchaseId: number; quantity: number; agreedPrice: number; unitCost: number }[];
 };
 type AnalysisPurchase = {
-  id: number; name: string; date: string; total: number; paymentDate: string | null; payments: PurchasePayment[];
+  id: number; name: string; date: string; total: number; openingPayerId?: number | null; paymentDate: string | null; payments: PurchasePayment[];
   lines: { productId: number; quantity: number; usedQuantity: number; unitCost: number }[];
 };
 type AnalysisData = {
@@ -53,7 +53,7 @@ export function tiedCapital(data: Pick<AnalysisData, "products" | "purchases">, 
       const value = quantity * line.unitCost;
       row.quantity += quantity;
       row.value += value;
-      if (purchase.paymentDate !== null) row.paidValue += value;
+      if (purchase.paymentDate !== null || purchase.openingPayerId != null) row.paidValue += value;
       if (!row.oldestDate || purchase.date < row.oldestDate) row.oldestDate = purchase.date;
     }
   }
@@ -65,7 +65,7 @@ export function tiedCapital(data: Pick<AnalysisData, "products" | "purchases">, 
 
 export function purchaseRecovery(data: Pick<AnalysisData, "purchases" | "orders" | "stockLosses">) {
   const rows = new Map(data.purchases.map(purchase => {
-    const paid = purchase.payments?.reduce((sum, payment) => sum + payment.amount, 0) ?? (purchase.paymentDate ? purchase.total : 0);
+    const paid = purchase.openingPayerId != null ? purchase.total : purchase.payments?.reduce((sum, payment) => sum + payment.amount, 0) ?? (purchase.paymentDate ? purchase.total : 0);
     return [purchase.id, {
       id: purchase.id, name: purchase.name, date: purchase.date, total: purchase.total, paid, collectedNet: 0,
       remainingStock: purchase.lines.reduce((sum, line) => sum + (line.quantity - line.usedQuantity) * line.unitCost, 0),
@@ -76,7 +76,7 @@ export function purchaseRecovery(data: Pick<AnalysisData, "purchases" | "orders"
     const weights = order.lines.map(line => line.quantity * line.agreedPrice);
     const hasGross = weights.some(weight => weight > 0);
     const net = order.receiptAmount === null || order.receiptDate === null ? 0
-      : order.receiptAmount - (order.netAfterShipping == null ? order.shipping : 0) - order.packing;
+      : order.receiptAmount - (order.netAfterShipping == null || order.shippingPayerId != null ? order.shipping : 0) - order.packing;
     const portions = allocate(net, hasGross ? weights : order.lines.map(line => line.quantity));
     order.lines.forEach((line, index) => {
       const purchase = rows.get(line.purchaseId);
