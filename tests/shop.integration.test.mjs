@@ -335,6 +335,68 @@ test("Two members track inventory, sales, supplier payments, and expenses", asyn
     priceOrder.lines.map(line => [line.productId, line.quantity, line.agreedPrice, line.listPrice]));
   assert.equal(pricesAfterEdit.packing, 300);
 
+  const supplyProduct = (await ok(mert("product", { name: "Shared inventory", dolapListPrice: 900, gardropsListPrice: 900, lowThreshold: 0 }))).id;
+  const sharedPurchaseId = (await ok(mert("purchase", { name: "Shared supplier payment", date, total: 1000,
+    lines: [{ productId: supplyProduct, quantity: 5, unitCost: 200, firstPartnerShare: 50 }],
+    payment: { date, payments: [{ payerId: mertId, amount: 400 }, { payerId: ayseId, amount: 600 }] },
+  }))).id;
+  let sharedState = await state();
+  let sharedPurchase = sharedState.purchases.find(purchase => purchase.id === sharedPurchaseId);
+  assert.equal(sharedPurchase.payerId, null);
+  assert.deepEqual(sharedPurchase.payments.map(payment => payment.amount), [400, 600]);
+  assert.deepEqual(sharedState.cash.filter(entry => entry.kind === "purchase" && entry.id === sharedPurchaseId).map(entry => entry.amount).sort(), [-400, -600]);
+  await ok(ayse("purchase-edit", { ...sharedPurchase, total: 2000, lines: sharedPurchase.lines.map(line => ({ ...line, quantity: 10 })) }));
+  sharedPurchase = (await state()).purchases.find(purchase => purchase.id === sharedPurchaseId);
+  assert.deepEqual(sharedPurchase.payments.map(payment => payment.amount), [800, 1200]);
+  assert.equal((await mert("cash-edit", { kind: "purchase", id: sharedPurchaseId, date, memberId: mertId })).status, 409);
+  await ok(mert("purchase-payment-edit", { id: sharedPurchaseId, date,
+    payments: [{ payerId: mertId, amount: 1000 }, { payerId: ayseId, amount: 1000 }] }));
+  assert.equal((await mert("purchase-payment-edit", { id: sharedPurchaseId, date, payments: [{ payerId: mertId, amount: 100 }] })).status, 400);
+
+  const beforeLoss = await state();
+  const lossId = (await ok(mert("stock-loss", { productId: supplyProduct, quantity: 3, reason: "damaged", date, note: "Damaged in storage" }))).id;
+  const afterLoss = await state();
+  assert.equal(afterLoss.products.find(product => product.id === supplyProduct).stock, 7);
+  assert.equal(afterLoss.summary.cashBalance, beforeLoss.summary.cashBalance);
+  assert.equal(afterLoss.stockLosses.find(loss => loss.id === lossId).lines.reduce((sum, line) => sum + line.quantity * line.unitCost, 0), 600);
+  assert.equal((await ayse("stock-loss", { productId: supplyProduct, quantity: 99, reason: "lost", date })).status, 409);
+  assert.equal((await state()).stockLosses.length, afterLoss.stockLosses.length);
+  await ok(ayse("stock-loss-delete", { id: lossId, date }));
+  assert.equal((await state()).products.find(product => product.id === supplyProduct).stock, 10);
+  assert.equal((await ayse("stock-loss-delete", { id: lossId, date })).status, 404);
+
+  const box = (await ok(mert("packaging-material", { name: "Box", perOrder: 2, lowThreshold: 3 }))).id;
+  await ok(ayse("packaging-move", { id: box, quantity: 3, direction: "in", date, note: "Purchased boxes" }));
+  const packageOrder = async reference => (await ok(mert("order", { date, platform: "Dolap", reference, saleTotal: 900, netAfterShipping: 800, packing: 100,
+    lines: [{ productId: supplyProduct, quantity: 1 }] }))).id;
+  const packedId = await packageOrder("PACKAGING-1");
+  await ok(mert("order-status", { id: packedId, date, status: "packed" }));
+  assert.equal((await state()).packagingMaterials.find(material => material.id === box).quantity, 1);
+  assert.equal((await mert("order-status", { id: packedId, date, status: "packed" })).status, 409);
+  const nextPackageId = await packageOrder("PACKAGING-2");
+  assert.equal((await mert("order-status", { id: nextPackageId, date, status: "packed" })).status, 409);
+  assert.equal((await state()).orders.find(order => order.id === nextPackageId).status, "pending");
+  await ok(mert("packaging-move", { id: box, quantity: 2, direction: "in", date }));
+  await ok(mert("order-status", { id: nextPackageId, date, status: "packed" }));
+  const packed = await state();
+  assert.equal(packed.packagingMaterials.find(material => material.id === box).quantity, 1);
+  assert.equal(packed.packagingMovements.filter(move => move.orderId !== null).length, 2);
+  await ok(mert("order-status", { id: nextPackageId, date, status: "cancelled" }));
+  assert.equal((await state()).packagingMaterials.find(material => material.id === box).quantity, 1);
+
+  const roundedPurchaseId = (await ok(mert("purchase", { name: "Rounding payment", date, total: 100,
+    lines: [{ productId: supplyProduct, quantity: 1, unitCost: 100, firstPartnerShare: 50 }],
+    payment: { date, payments: [{ payerId: mertId, amount: 1 }, { payerId: ayseId, amount: 99 }] },
+  }))).id;
+  let roundedPurchase = (await state()).purchases.find(purchase => purchase.id === roundedPurchaseId);
+  await ok(mert("purchase-edit", { ...roundedPurchase, total: 1, lines: roundedPurchase.lines.map(line => ({ ...line, unitCost: 1 })) }));
+  roundedPurchase = (await state()).purchases.find(purchase => purchase.id === roundedPurchaseId);
+  assert.deepEqual(roundedPurchase.payments.map(payment => [payment.payerId, payment.amount]), [[ayseId, 1]]);
+  await ok(mert("purchase-edit", { ...roundedPurchase, total: 2, lines: roundedPurchase.lines.map(line => ({ ...line, unitCost: 2 })) }));
+  assert.equal((await state()).purchases.find(purchase => purchase.id === roundedPurchaseId).payerId, ayseId);
+  await ok(mert("cash-edit", { id: roundedPurchaseId, kind: "purchase", date, memberId: mertId }));
+  assert.equal((await state()).purchases.find(purchase => purchase.id === roundedPurchaseId).payerId, mertId);
+
   await ok(mert("logout", {}));
   assert.equal((await ok(mert("session"))).user, null);
   assert.equal((await mert("state")).status, 401);

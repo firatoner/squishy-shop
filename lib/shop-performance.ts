@@ -25,9 +25,34 @@ export function calculatePerformance(data: PerformanceData, from: string, throug
     return {
       id: product.id, name: product.name, stock: product.stock, daysInStock,
       quantity: sale?.quantity ?? 0, gross: sale?.gross ?? 0, profit: sale?.profit ?? 0,
+      lossCost: sale?.lossCost ?? 0,
       margin: sale?.gross ? sale.profit / sale.gross * 100 : null,
     };
   });
+}
+
+export function performanceTrend(data: PerformanceData, from: string, through: string) {
+  const dayMs = 86400000;
+  const firstDay = Date.parse(from + "T00:00:00Z");
+  const totalDays = Math.floor((Date.parse(through + "T00:00:00Z") - firstDay) / dayMs) + 1;
+  const bucketDays = Math.max(1, Math.ceil(totalDays / 12));
+  const buckets = Array.from({ length: Math.ceil(totalDays / bucketDays) }, (_, index) => ({
+    date: new Date(firstDay + index * bucketDays * dayMs).toISOString().slice(0, 10), gross: 0, profit: 0,
+  }));
+  for (const order of data.orders) {
+    if (order.date < from || order.date > through || (order.status !== "pending" && order.status !== "packed")) continue;
+    const index = Math.floor((Date.parse(order.date + "T00:00:00Z") - firstDay) / dayMs / bucketDays);
+    const gross = order.lines.reduce((sum, line) => sum + line.quantity * line.agreedPrice, 0);
+    const cost = order.lines.reduce((sum, line) => sum + line.quantity * line.unitCost, 0);
+    buckets[index].gross += gross;
+    buckets[index].profit += (order.netAfterShipping ?? (gross - order.platformFee - order.shipping)) - order.packing - cost;
+  }
+  for (const loss of data.stockLosses ?? []) {
+    if (loss.date < from || loss.date > through) continue;
+    const index = Math.floor((Date.parse(loss.date + "T00:00:00Z") - firstDay) / dayMs / bucketDays);
+    buckets[index].profit -= loss.lines.reduce((sum, line) => sum + line.quantity * line.unitCost, 0);
+  }
+  return buckets;
 }
 
 type PlatformOrder = {

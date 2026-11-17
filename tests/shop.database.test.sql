@@ -21,6 +21,7 @@ begin
   assert (public.shop_auth('session', '{}')->>'needsSetup')::boolean;
   assert not has_function_privilege('anon', 'public.shop_write(integer,text,jsonb)', 'execute');
   assert not has_function_privilege('authenticated', 'public.shop_read(text,jsonb)', 'execute');
+  assert not has_function_privilege('anon', 'public.shop_inventory_write(integer,text,jsonb)', 'execute');
 
   actor := (public.shop_auth('setup', '{
     "users": [

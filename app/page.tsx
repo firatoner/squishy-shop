@@ -2,8 +2,8 @@
 
 import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { Activity, Archive, BarChart3, Boxes, CalendarDays, Check, Download, Heart, House, LogOut, Plus, Receipt, Settings, ShoppingBag, Sparkles, Users, Wallet, X } from "lucide-react";
-import { calculatePartnership, type PartnerTransfer } from "@/lib/shop-partnership";
-import { calculatePerformance, comparePlatforms, restockSuggestions } from "@/lib/shop-performance";
+import { calculatePartnership, type PartnerTransfer, type PurchasePayment, type StockLoss } from "@/lib/shop-partnership";
+import { calculatePerformance, comparePlatforms, restockSuggestions, performanceTrend } from "@/lib/shop-performance";
 
 type Member = { id: number; username: string; name: string };
 type Session = { user: Member | null; needsSetup: boolean };
@@ -12,6 +12,7 @@ type Product = { id: number; name: string; photo: string | null; dolapListPrice:
 type Purchase = {
   id: number; name: string; date: string; total: number; actorId: number; revision: number;
   paymentDate: string | null; payerId: number | null;
+  payments: PurchasePayment[];
   lines: { lotId: number; productId: number; productName: string; quantity: number; unitCost: number;
     usedQuantity: number; hasSalesHistory: boolean; firstPartnerShare: number | null }[];
 };
@@ -35,9 +36,13 @@ type Shop = {
   users: Member[]; products: Product[]; purchases: Purchase[]; orders: Order[]; expenses: Expense[]; stock: Stock[]; cash: Cash[]; audit: Audit[];
   partnerTransfers: PartnerTransfer[];
   settings: { defaultPacking: number };
+  stockLosses: StockLoss[];
+  packagingMaterials: PackagingMaterial[];
+  packagingMovements: { id: number; materialId: number; date: string; quantity: number; orderId: number | null; note: string }[];
   summary: { month: string; gross: number; collected: number; profit: number; cashBalance: number };
 };
-type PageName = "dashboard" | "products" | "orders" | "stock" | "cash" | "partners" | "performance" | "platforms" | "restock" | "reports" | "settings";
+type PackagingMaterial = { id: number; name: string; quantity: number; lowThreshold: number; perOrder: number; revision: number };
+type PageName = "dashboard" | "products" | "orders" | "stock" | "cash" | "partners" | "performance" | "platforms" | "restock" | "packaging" | "reports" | "settings";
 type Editor =
   | { type: "product"; product?: Product }
   | { type: "purchase" | "order" }
@@ -51,6 +56,10 @@ type Editor =
   | { type: "partner-transfer"; senderId?: number; amount?: number }
   | { type: "partner-transfer-delete"; transfer: PartnerTransfer }
   | { type: "settings"; defaultPacking: number }
+  | { type: "stock-loss" }
+  | { type: "stock-loss-delete"; loss: StockLoss }
+  | { type: "packaging-material"; material?: PackagingMaterial }
+  | { type: "packaging-move"; material: PackagingMaterial }
   | { type: "order-status"; order: Order; status: "packed" | "cancelled" | "returned" };
 
 const sections = [
@@ -63,6 +72,7 @@ const sections = [
   { id: "performance", label: "Ürün Performansı", Icon: BarChart3 },
   { id: "platforms", label: "Platform Karşılaştırması", Icon: ShoppingBag },
   { id: "restock", label: "Stok Yenileme", Icon: Boxes },
+  { id: "packaging", label: "Ambalaj Stoku", Icon: Archive },
   { id: "reports", label: "Raporlar", Icon: Download },
   { id: "settings", label: "Ayarlar", Icon: Settings },
 ] as const;
@@ -70,7 +80,7 @@ const statusLabel: Record<OrderStatus, string> = {
   pending: "Paketlenecek", packed: "Paketlendi", cancelled: "İptal edildi", returned: "İade edildi",
 };
 const stockLabel: Record<string, string> = {
-  purchase: "Stok alımı", sale: "Satış", cancelled: "Satış iptali", returned: "Satılabilir iade", adjustment: "Stok düzeltmesi",
+  purchase: "Stok alımı", sale: "Satış", cancelled: "Satış iptali", returned: "Satılabilir iade", adjustment: "Stok düzeltmesi", loss: "Hasar/kayıp",
 };
 const expenseCategories = ["Ambalaj", "Kargo", "Malzeme", "Pazarlama", "Diğer"];
 const cashLabels: Record<CashKind, string> = { purchase: "Stok ödemesi", receipt: "Tahsilat", expense: "Gider" };
@@ -260,7 +270,9 @@ function StockPage({ data, open }: { data: Shop; open: (editor: Editor) => void 
   const [productId, setProductId] = useState("");
   const shown = data.stock.filter(move => !productId || move.productId === Number(productId));
   return <>
-    <SectionHeader title="Stok" description="Toptan kutuları, alım ödemelerini ve ürün hareketlerini takip et."><AddButton primary onClick={() => open({ type: "purchase" })}>Stok Ekle</AddButton></SectionHeader>
+    <SectionHeader title="Stok" description="Toptan kutuları, alım ödemelerini ve ürün hareketlerini takip et.">
+      <div className="actions"><AddButton onClick={() => open({ type: "stock-loss" })}>Hasar / Kayıp Kaydet</AddButton><AddButton primary onClick={() => open({ type: "purchase" })}>Stok Ekle</AddButton></div>
+    </SectionHeader>
     <div className="stack">
       <Panel title="Toptan alımlar">{data.purchases.length ? <div className="list">{data.purchases.map(purchase =>
         <details className="purchase-details" key={purchase.id}>
@@ -269,13 +281,20 @@ function StockPage({ data, open }: { data: Shop; open: (editor: Editor) => void 
             line.productName, line.quantity, line.quantity - (line.usedQuantity ?? 0), money(line.unitCost), money(line.quantity * line.unitCost),
             line.firstPartnerShare == null ? "Pay girilmedi" : shareLabel(data.users, line.firstPartnerShare),
           ])} />
-          <div className="row"><p className="subtle">Ekleyen {getMember(data.users, purchase.actorId)}{purchase.paymentDate && " · Ödeyen " + getMember(data.users, purchase.payerId) + " · " + dateLabel(purchase.paymentDate)}</p>
+          <div className="row"><p className="subtle">Ekleyen {getMember(data.users, purchase.actorId)}{purchase.paymentDate && " · " + (purchase.payments ?? []).map(payment => getMember(data.users, payment.payerId) + " " + money(payment.amount)).join(" + ") + " · " + dateLabel(purchase.paymentDate)}</p>
           <div className="actions">
             <button onClick={() => open({ type: "purchase-edit", purchase })}>Düzenle</button>
-            {!purchase.paymentDate && <button onClick={() => open({ type: "purchase-payment", purchase })}>Ödeme gir</button>}
+            <button onClick={() => open({ type: "purchase-payment", purchase })}>{purchase.paymentDate ? "Ödemeyi düzenle" : "Ödeme gir"}</button>
           </div></div>
         </details>,
       )}</div> : <Empty>Henüz toptan alım kaydı yok.</Empty>}</Panel>
+      <Panel title="Hasarlı ve kayıp ürünler">
+        {data.stockLosses?.length ? <Table headers={["Tarih", "Ürün", "Neden", "Adet", "Maliyet zararı", "Not", "İşlem"]}
+          rows={data.stockLosses.map(loss => [dateLabel(loss.date), loss.productName, loss.reason === "damaged" ? "Hasarlı" : "Kayıp",
+            loss.quantity, money(loss.lines.reduce((sum, line) => sum + line.quantity * line.unitCost, 0)), loss.note || "—",
+            <button key={loss.id} onClick={() => open({ type: "stock-loss-delete", loss })}>Geri al</button>])} />
+          : <Empty>Hasar veya kayıp kaydı yok.</Empty>}
+      </Panel>
       <Panel title="Stok hareketleri" meta={<div className="form"><label>Ürün<select value={productId} onChange={event => setProductId(event.target.value)}><option value="">Tüm ürünler</option>{data.products.map(product => <option key={product.id} value={product.id}>{product.name}</option>)}</select></label></div>}>
         {shown.length ? <Table headers={["Tarih", "Ürün", "Hareket", "Adet", "Birim maliyet", "İşlemi yapan", "Referans"]} rows={shown.map(move => [dateLabel(move.date), move.productName, stockLabel[move.kind] ?? move.kind, (move.quantity > 0 ? "+" : "") + move.quantity, money(move.unitCost), getMember(data.users, move.actorId), move.reference])} /> : <Empty>Bu seçimde stok hareketi yok.</Empty>}
       </Panel>
@@ -298,8 +317,10 @@ function CashPage({ data, open }: { data: Shop; open: (editor: Editor) => void }
       <Panel title="Toplam kasa bakiyesi" meta={<strong className="cash-value">{money(data.summary.cashBalance)}</strong>}>
         {data.cash.length ? <Table headers={["Tarih", "İşlem", "Açıklama", "Hesap", "Tutar", "Ekleyen", "İşlemler"]} rows={data.cash.map(item => {
           const expense = expenses.get(item.id);
+          const purchase = data.purchases.find(purchase => item.kind === "purchase" && purchase.id === item.id);
           const rowActions = item.kind === "expense"
             ? expense && expenseActions(expense)
+            : purchase ? actions({ ...item, amount: -purchase.total }, { type: "purchase-payment", purchase })
             : actions(item, { type: "cash-payment-edit", payment: item });
           return [dateLabel(item.date), cashLabels[item.kind], item.description || "—", getMember(data.users, item.memberId),
             money(item.amount), item.memberId !== item.actorId ? getMember(data.users, item.actorId) : "—", rowActions];
@@ -339,6 +360,7 @@ function PartnersPage({ data, open }: { data: Shop; open: (editor: Editor) => vo
             <button onClick={() => open({ type: "partner-transfer", senderId: sender.id, amount: Math.abs(figures.firstBalance) })}>Ödemeyi kaydet</button>
           </div>}
           {figures.awaitingStockPayments.size > 0 && <p className="subtle">{figures.awaitingStockPayments.size} tahsilat stok ödemesi girilince bölüşüme dahil olur.</p>}
+          {figures.awaitingLossPayments > 0 && <p className="subtle">{figures.awaitingLossPayments} hasar/kayıp kaydı stok ödemesi tamamlanınca ortak bakiyesine yansır.</p>}
           {figures.excludedReceipts > 0 && <p className="subtle">İptal ve iadelere ait {money(figures.excludedReceipts)} tahsilat bölüşüm dışında.</p>}
           {figures.unassignedExpenses > 0 && <p className="subtle">{figures.unassignedExpenses} giderin payı boş. Kasa ve Giderler ekranından pay girerek bölüşüme dahil edebilirsin.</p>}
           {figures.missingShares.size > 0 && <div className="stack">
@@ -353,7 +375,7 @@ function PartnersPage({ data, open }: { data: Shop; open: (editor: Editor) => vo
               money(partner.expensesPaid), money(partner.realizedShare)])} />
         </Panel>
         <Panel title="Dönemin ürün kârları">
-          <p className="subtle">Satış tutarından platform kesintisi, siparişin kargo ve paketleme giderleri ve stok maliyeti düşülür.</p>
+          <p className="subtle">Satış tutarından platform kesintisi, siparişin kargo ve paketleme giderleri, stok maliyeti ve hasar/kayıp maliyeti düşülür.</p>
           {figures.products.length ? <Table headers={["Ürün", "Adet", "Satış kârı", names[0], names[1], "Payı eksik satış"]}
             rows={figures.products.map(product => [product.name, product.quantity, money(product.profit), money(product.firstProfit),
               money(product.secondProfit), product.unassigned || "—"])} /> : <Empty>Bu dönemde ürün satışı yok.</Empty>}
@@ -368,6 +390,24 @@ function PartnersPage({ data, open }: { data: Shop; open: (editor: Editor) => vo
       </> : <p className="form-error" role="alert">Geçerli bir başlangıç ve bitiş tarihi seç.</p>}
     </div>
   </>;
+}
+function ChartBars({ values, format, signed = false }: {
+  values: { label: string; value: number }[]; format: (value: number) => string; signed?: boolean;
+}) {
+  const maximum = Math.max(1, ...values.map(item => Math.abs(item.value)));
+  return <div className="chart-bars" role="list">
+    {values.map((item, index) => {
+      const width = Math.abs(item.value) / maximum * (signed ? 50 : 100);
+      const left = signed ? item.value < 0 ? 50 - width : 50 : 0;
+      return <div className="chart-row" role="listitem" key={item.label + index} title={item.label + " · " + format(item.value)}>
+        <span className="chart-label">{item.label}</span>
+        <div className={"chart-track" + (signed ? " chart-signed" : "")} aria-hidden="true">
+          <span className={"chart-fill" + (item.value < 0 ? " chart-negative" : "")} style={{ width: width + "%", left: left + "%" }} />
+        </div>
+        <strong>{format(item.value)}</strong>
+      </div>;
+    })}
+  </div>;
 }
 function PerformancePage({ data }: { data: Shop }) {
   const [from, setFrom] = useState(data.summary.month + "-01");
@@ -384,6 +424,9 @@ function PerformancePage({ data }: { data: Shop }) {
   });
   const totalSold = rows.reduce((sum, row) => sum + row.quantity, 0);
   const totalProfit = rows.reduce((sum, row) => sum + row.profit, 0);
+  const trend = valid ? performanceTrend(data, from, through) : [];
+  const byQuantity = [...rows].filter(row => row.quantity > 0).sort((a, b) => b.quantity - a.quantity).slice(0, 6);
+  const byProfit = [...rows].filter(row => row.gross > 0 || row.lossCost > 0).sort((a, b) => b.profit - a.profit).slice(0, 6);
   return <>
     <SectionHeader title="Ürün Performansı" description="Satılan adetleri, ürün kârlarını ve stokta bekleyen ürünleri takip et." />
     <div className="stack">
@@ -393,7 +436,24 @@ function PerformancePage({ data }: { data: Shop }) {
       </div>
       {valid ? <>
         <Panel title="Dönem toplamı" meta={<span>{totalSold} ürün · {money(totalProfit)} kâr</span>}>
-          <p className="subtle">Satış kârına kargo, platform kesintisi, paketleme ve ürün maliyeti dahildir. İptal ve iadeler çıkarılır. Genel kasa giderleri ürünlere dağıtılmaz.</p>
+          <p className="subtle">Net sonuca kargo, platform kesintisi, paketleme, ürün maliyeti ve hasar/kayıp maliyeti dahildir.</p>
+        </Panel>
+        <div className="chart-grid">
+          <Panel title="En çok satan ürünler">
+            {byQuantity.length ? <ChartBars values={byQuantity.map(row => ({ label: row.name, value: row.quantity }))} format={value => value + " adet"} />
+              : <Empty>Bu dönemde satış yok.</Empty>}
+          </Panel>
+          <Panel title="Ürünlerin net sonucu">
+            {byProfit.length ? <ChartBars values={byProfit.map(row => ({ label: row.name, value: row.profit }))} format={money} signed />
+              : <Empty>Bu dönemde satış veya zarar kaydı yok.</Empty>}
+          </Panel>
+        </div>
+        <Panel title="Satış ve net sonuç gelişimi">
+          <p className="subtle">Seçilen dönem en fazla 12 zaman aralığına bölünür. Etiketler aralıkların başlangıcını gösterir.</p>
+          <ChartBars values={trend.flatMap(point => [
+            { label: point.date.slice(8, 10) + "." + point.date.slice(5, 7) + " · Satış", value: point.gross },
+            { label: point.date.slice(8, 10) + "." + point.date.slice(5, 7) + " · Net", value: point.profit },
+          ])} format={money} signed />
         </Panel>
         <Panel title="Ürünler">
           <div className="form form-row">
@@ -403,8 +463,8 @@ function PerformancePage({ data }: { data: Shop }) {
             </select></label>
           </div>
           <p className="subtle">Stok ve bekleme süresi bugünkü kalan ürünleri gösterir. Bekleme süresi eldeki en eski alımdan hesaplanır.</p>
-          {shown.length ? <Table headers={["Ürün", "Satılan adet", "Satış toplamı", "Kâr", "Kâr oranı", "Güncel stok", "Stokta bekleme"]}
-            rows={shown.map(row => [row.name, row.quantity, money(row.gross), money(row.profit),
+          {shown.length ? <Table headers={["Ürün", "Satılan adet", "Satış toplamı", "Hasar/kayıp", "Net sonuç", "Kâr oranı", "Güncel stok", "Stokta bekleme"]}
+            rows={shown.map(row => [row.name, row.quantity, money(row.gross), money(row.lossCost), money(row.profit),
               row.margin === null ? "—" : "%" + row.margin.toLocaleString("tr-TR", { maximumFractionDigits: 1 }),
               row.stock, row.stock ? row.daysInStock + " gün" : "—"])} /> : <Empty>Bu seçime uygun ürün yok.</Empty>}
         </Panel>
@@ -474,6 +534,33 @@ function RestockPage({ data }: { data: Shop }) {
     </div>
   </>;
 }
+function PackagingPage({ data, open }: { data: Shop; open: (editor: Editor) => void }) {
+  const materials = data.packagingMaterials ?? [];
+  const movements = data.packagingMovements ?? [];
+  return <>
+    <SectionHeader title="Ambalaj Stoku" description="Kutu, sticker, kart ve diğer paketleme malzemelerini takip et.">
+      <AddButton primary onClick={() => open({ type: "packaging-material" })}>Malzeme Ekle</AddButton>
+    </SectionHeader>
+    <div className="stack">
+      <Panel title="Malzemeler">
+        <p className="subtle">Sipariş Paketlendi olunca tanımladığın kullanım adedi otomatik düşülür. Malzeme alımının parasal giderini Kasa ve Giderler ekranına kaydedebilirsin.</p>
+        {materials.length ? <Table headers={["Malzeme", "Eldeki adet", "Sipariş başına", "Stok durumu", "İşlemler"]}
+          rows={materials.map(material => [material.name, material.quantity, material.perOrder,
+            <span key={"status" + material.id} className={"pill " + (material.quantity <= material.lowThreshold ? "warning" : "ok")}>{material.quantity <= material.lowThreshold ? "Azaldı" : "Yeterli"}</span>,
+            <div className="actions" key={material.id}>
+              <button onClick={() => open({ type: "packaging-move", material })}>Stok giriş / çıkış</button>
+              <button onClick={() => open({ type: "packaging-material", material })}>Düzenle</button>
+            </div>])} /> : <Empty>İlk ambalaj malzemesini ekleyerek başla.</Empty>}
+      </Panel>
+      <Panel title="Malzeme hareketleri">
+        {movements.length ? <Table headers={["Tarih", "Malzeme", "Adet", "Sipariş", "Not"]}
+          rows={movements.map(movement => [dateLabel(movement.date), materials.find(material => material.id === movement.materialId)?.name ?? "—",
+            (movement.quantity > 0 ? "+" : "") + movement.quantity, movement.orderId ? "#" + movement.orderId : "—", movement.note || "—"])} />
+          : <Empty>Henüz malzeme hareketi yok.</Empty>}
+      </Panel>
+    </div>
+  </>;
+}
 function SettingsPage({ shop, open }: { shop: Shop; open: (editor: Editor) => void }) {
   const amount = defaultPacking(shop);
   return <>
@@ -512,6 +599,32 @@ function AmountField({ label, name, value }: { label: string; name: string; valu
 }
 function MemberField({ label, users, defaultId, name = "payerId" }: { label: string; users: Member[]; defaultId: number; name?: string }) {
   return <label>{label}<select name={name} defaultValue={defaultId} required>{users.map(user => <option value={user.id} key={user.id}>{user.name}</option>)}</select></label>;
+}
+function paymentPayload(data: FormData, total: number, users: Member[], dateName = "paymentDate") {
+  const date = field(data, dateName);
+  if (!data.has("sharedPayment")) return { date, payerId: Number(field(data, "payerId")) };
+  const [first, second] = [...users].sort((a, b) => a.id - b.id);
+  const firstAmount = requiredMoney(field(data, "firstPayment"));
+  if (firstAmount < 0 || firstAmount > total) throw new Error("Ödeme tutarı alım toplamını aşamaz.");
+  return { date, payments: [{ payerId: first.id, amount: firstAmount }, { payerId: second.id, amount: total - firstAmount }].filter(payment => payment.amount > 0) };
+}
+function PaymentFields({ users, total, defaultId, purchase }: { users: Member[]; total: number; defaultId: number; purchase?: Purchase }) {
+  const [first, second] = [...users].sort((a, b) => a.id - b.id);
+  const [shared, setShared] = useState((purchase?.payments?.length ?? 0) > 1);
+  const [firstAmount, setFirstAmount] = useState<string | null>(purchase?.payments?.length
+    ? moneyInput(purchase.payments.find(payment => payment.payerId === first.id)?.amount ?? 0) : null);
+  const value = firstAmount ?? moneyInput(Math.floor(total / 2));
+  const remaining = total - toMoney(value);
+  return <fieldset className="line-editor">
+    <legend>Alım ödemesi</legend>
+    <DateField label="Ödeme tarihi" name="paymentDate" value={purchase?.paymentDate ?? undefined} />
+    <label className="check"><input name="sharedPayment" type="checkbox" checked={shared} onChange={event => setShared(event.target.checked)} />İki ortak birlikte ödedi</label>
+    {shared ? <div className="form-row">
+      <label>{first.name} ödedi (₺)<input name="firstPayment" inputMode="decimal" value={value} onChange={event => setFirstAmount(event.target.value)} maxLength={13} required /></label>
+      <label>{second.name} ödedi (₺)<input value={Number.isFinite(remaining) ? moneyInput(remaining) : ""} readOnly /></label>
+    </div> : <MemberField label="Ödeyen" users={users} defaultId={purchase?.payerId ?? defaultId} />}
+    {shared && remaining < 0 && <p className="form-error">Ödeme alım toplamını aşamaz.</p>}
+  </fieldset>;
 }
 function shareLabel(users: Member[], share: number) {
   const [first, second] = [...users].sort((a, b) => a.id - b.id);
@@ -702,7 +815,7 @@ function LinesForm({ mode, purchaseToEdit, orderToEdit, shop, user, busy, save, 
       return {
         name, date, total: amount,
         lines: baseLines.map(({ price, ...line }, index) => ({ ...line, unitCost: price, firstPartnerShare: Number(lines[index].firstPartnerShare) })),
-        payment: paid ? { date: field(data, "paymentDate"), payerId: Number(field(data, "payerId")) } : undefined,
+        payment: paid ? paymentPayload(data, sum, shop.users) : undefined,
       };
     }
     return {
@@ -738,7 +851,7 @@ function LinesForm({ mode, purchaseToEdit, orderToEdit, shop, user, busy, save, 
         {purchase && <ShareField users={shop.users} name={"share-" + line.id} value={line.original?.firstPartnerShare} required
           onChange={share => updateLine(line.id, { firstPartnerShare: share })} />}
         {purchase && <p className="subtle">Bu alımdaki ürünlerin kâr payı. %100 ve %0 ile tek ortağa ait stok girebilirsin.</p>}
-        {line.original?.hasSalesHistory && <p className="subtle">Satışlarda kullanılan {line.original.usedQuantity} adet · Ürün ve birim maliyet satış geçmişi nedeniyle sabit.</p>}
+        {line.original?.hasSalesHistory && <p className="subtle">Satış veya hasar/kayıp kayıtlarında kullanılan {line.original.usedQuantity} adet · Ürün ve birim maliyet işlem geçmişi nedeniyle sabit.</p>}
         {!purchase && listPrice !== undefined && <p className="subtle">{platform} liste fiyatı {money(listPrice)}</p>}
         {lines.length > 1 && !line.original?.hasSalesHistory && <div className="actions"><button className="danger" type="button" onClick={() => setLines(active => active.filter(other => other.id !== line.id))}>Satırı kaldır</button></div>}
       </fieldset>
@@ -756,7 +869,7 @@ function LinesForm({ mode, purchaseToEdit, orderToEdit, shop, user, busy, save, 
         {Number.isFinite(totalDifference) && <div className="inline"><span>{totalDifference ? "Fark" : "Kutu toplamı eşleşiyor"}</span>{totalDifference ? <strong className="danger">{money(totalDifference)}</strong> : <Check className="icon" aria-hidden="true" />}</div>}
       </div>
       <label className="check"><input type="checkbox" checked={paid} onChange={event => setPaid(event.target.checked)} />Ödeme yapıldı</label>
-      {paid && <div className="form-row"><DateField label="Ödeme tarihi" name="paymentDate" /><MemberField label="Ödeyen" users={shop.users} defaultId={user.id} /></div>}
+      {paid && <PaymentFields users={shop.users} total={sum} defaultId={user.id} />}
     </> : <>
       <div className="form-row">
         <label>Toplam satış tutarı (₺)<input inputMode="decimal" maxLength={13} value={saleTotal} onChange={event => setSaleTotal(event.target.value)} placeholder={moneyInput(sum)} /></label>
@@ -851,7 +964,11 @@ function getTitle(editor: Editor) {
     case "expense": return editor.expense ? "Gideri düzenle" : "Gider ekle";
     case "cash-payment-edit": return editor.payment.kind === "receipt" ? "Tahsilatı düzenle" : "Stok ödemesini düzenle";
     case "cash-delete": return "Kasa kaydını sil";
-    case "purchase-payment": return "Stok ödemesini kaydet";
+    case "purchase-payment": return editor.purchase.paymentDate ? "Stok ödemesini düzenle" : "Stok ödemesini kaydet";
+    case "stock-loss": return "Hasar veya kayıp kaydet";
+    case "stock-loss-delete": return "Hasar/kayıp kaydını geri al";
+    case "packaging-material": return editor.material ? "Ambalaj malzemesini düzenle" : "Ambalaj malzemesi ekle";
+    case "packaging-move": return "Ambalaj stok hareketi";
     case "receipt": return "Tahsilatı kaydet";
     case "order-detail": return "Sipariş detayı";
     case "order-share": return "Satışın ortaklık payını gir";
@@ -936,10 +1053,52 @@ function EditorBody({ editor, shop, user, busy, save, open }: { editor: Editor; 
       </form>;
     }
     case "purchase-payment":
-      return <form className="form" onSubmit={event => save(event, "purchase-payment", data => ({ id: editor.purchase.id, date: field(data, "date"), payerId: Number(field(data, "payerId")) }))}>
+      return <form className="form" onSubmit={event => save(event, editor.purchase.paymentDate ? "purchase-payment-edit" : "purchase-payment", data => ({
+        id: editor.purchase.id, ...paymentPayload(data, editor.purchase.total, shop.users),
+      }))}>
         <div className="form-totals inline"><span>{editor.purchase.name}</span><strong>{money(editor.purchase.total)}</strong></div>
-        <DateField label="Ödeme tarihi" /><MemberField label="Ödeyen" users={shop.users} defaultId={user.id} />
+        <PaymentFields users={shop.users} total={editor.purchase.total} defaultId={user.id} purchase={editor.purchase} />
         <SaveButton busy={busy} />
+      </form>;
+    case "stock-loss":
+      return <form className="form" onSubmit={event => save(event, "stock-loss", data => ({
+        productId: Number(field(data, "productId")), quantity: Number(field(data, "quantity")), reason: field(data, "reason"),
+        date: field(data, "date"), note: field(data, "note"),
+      }))}>
+        <label>Ürün<select name="productId" required><option value="">Ürün seç</option>{shop.products.filter(product => product.stock > 0)
+          .map(product => <option key={product.id} value={product.id}>{product.name} · {product.stock} adet</option>)}</select></label>
+        <div className="form-row"><label>Adet<input name="quantity" type="number" min={1} max={100000} step={1} defaultValue={1} required /></label>
+          <label>Neden<select name="reason"><option value="damaged">Hasarlı</option><option value="lost">Kayıp</option></select></label></div>
+        <DateField /><label>Not<textarea name="note" maxLength={500} rows={3} /></label>
+        <p className="subtle">Ürünler en eski stoktan düşülür. Alış maliyetleri zarar olarak kaydedilir.</p>
+        <SaveButton busy={busy} />
+      </form>;
+    case "stock-loss-delete":
+      return <form className="form" onSubmit={event => save(event, "stock-loss-delete", data => ({ id: editor.loss.id, date: field(data, "date") }))}>
+        <p>{editor.loss.quantity} adet {editor.loss.productName} stoğa geri eklenecek ve zarar kaydı kaldırılacak.</p>
+        <DateField label="Geri alma tarihi" /><SaveButton busy={busy}>Geri almayı onayla</SaveButton>
+      </form>;
+    case "packaging-material":
+      return <form className="form" onSubmit={event => save(event, "packaging-material", data => ({
+        id: editor.material?.id, revision: editor.material?.revision, name: field(data, "name"),
+        lowThreshold: Number(field(data, "lowThreshold")), perOrder: Number(field(data, "perOrder")),
+      }))}>
+        <label>Malzeme adı<input name="name" defaultValue={editor.material?.name} maxLength={120} required /></label>
+        <div className="form-row">
+          <label>Düşük stok eşiği<input name="lowThreshold" type="number" min={0} max={100000} defaultValue={editor.material?.lowThreshold ?? 5} required /></label>
+          <label>Sipariş başına kullanılan adet<input name="perOrder" type="number" min={0} max={100000} defaultValue={editor.material?.perOrder ?? 1} required /></label>
+        </div>
+        <p className="subtle">Sipariş Paketlendi olarak işaretlenince bu adet otomatik düşülür. Elle kullanım takibi için sıfır gir.</p>
+        <SaveButton busy={busy} />
+      </form>;
+    case "packaging-move":
+      return <form className="form" onSubmit={event => save(event, "packaging-move", data => ({
+        id: editor.material.id, quantity: Number(field(data, "quantity")), direction: field(data, "direction"), date: field(data, "date"), note: field(data, "note"),
+      }))}>
+        <p>{editor.material.name} · Eldeki {editor.material.quantity} adet</p>
+        <label>İşlem<select name="direction"><option value="in">Stok girişi</option><option value="out">Elle kullanım / çıkış</option></select></label>
+        <label>Adet<input name="quantity" type="number" min={1} max={100000} defaultValue={1} required /></label>
+        <DateField /><label>Not<textarea name="note" maxLength={500} rows={3} /></label><SaveButton busy={busy} />
       </form>;
     case "receipt":
       return <form className="form" onSubmit={event => save(event, "receipt", data => ({
@@ -1016,6 +1175,7 @@ function visiblePage(page: PageName, shop: Shop, open: (editor: Editor) => void)
     case "performance": return <PerformancePage data={shop} />;
     case "platforms": return <PlatformsPage data={shop} />;
     case "restock": return <RestockPage data={shop} />;
+    case "packaging": return <PackagingPage data={shop} open={open} />;
     case "reports": return <Reports month={shop.summary.month} />;
     case "settings": return <SettingsPage shop={shop} open={open} />;
   }

@@ -110,6 +110,15 @@ dialog::backdrop { background: #381a335d; }
 .auth-card h1 { font-size: 40px; }
 .auth-card .form button { justify-self: start; }
 .table-wrap { overflow-x: auto; }
+.chart-grid { display: grid; grid-template-columns: repeat(auto-fit,minmax(min(100%,320px),1fr)); gap: 16px; }
+.chart-bars { display: grid; gap: 12px; margin: 16px 0; }
+.chart-row { display: grid; grid-template-columns: minmax(76px,1fr) minmax(64px,2fr) minmax(72px,auto); gap: 10px; align-items: center; font-size: 12px; }
+.chart-label { overflow-wrap: anywhere; }
+.chart-row strong { text-align: right; font-variant-numeric: tabular-nums; }
+.chart-track { height: 15px; position: relative; background: #f5e9ed; border-radius: 4px; overflow: hidden; }
+.chart-signed::after { content: ""; position: absolute; left: 50%; top: 0; bottom: 0; width: 1px; background: #bca7b1; }
+.chart-fill { position: absolute; top: 2px; bottom: 2px; background: #a34b73; border-radius: 3px; }
+.chart-negative { background: #cb6255; }
 table { width: 100%; border-collapse: collapse; text-align: left; }
 th, td { padding: 11px 8px; border-bottom: 1px solid var(--line); }
 th { color: var(--muted); font-size: 12px; white-space: nowrap; }

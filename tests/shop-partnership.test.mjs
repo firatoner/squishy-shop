@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { calculatePartnership } from "../lib/shop-partnership.ts";
-import { calculatePerformance, comparePlatforms, restockSuggestions } from "../lib/shop-performance.ts";
+import { calculatePerformance, comparePlatforms, restockSuggestions, performanceTrend } from "../lib/shop-performance.ts";
 
 const from = "2026-11-01";
 const through = "2026-11-30";
@@ -127,4 +127,30 @@ test("restock uses an inclusive rolling window, exact target rounding and curren
   assert.deepEqual(result.map(row => [row.quantity, row.targetStock, row.suggestedQuantity, row.daysRemaining]), [[15, 7, 5, 4], [0, 0, 0, null]]);
   assert.equal(restockSuggestions(data, "2026-11-18", 30, 60)[0].suggestedQuantity, 28);
   assert.equal(restockSuggestions({ ...data, products: [{ id: 1, name: "Peach", stock: 100 }] }, "2026-11-18", 30, 14)[0].suggestedQuantity, 0);
+});
+
+test("shared payments reimburse each partner and preserve total cents across partial sales and losses", () => {
+  const purchase = { id: 1, total: 2, payerId: null, paymentDate: date,
+    payments: [{ payerId: 1, amount: 1, date }, { payerId: 2, amount: 1, date }] };
+  const order = { ...sale, packing: 0, platformFee: 0, shipping: 0, receiptAmount: 10,
+    lines: [{ ...sale.lines[0], quantity: 1, unitCost: 1, agreedPrice: 10, firstPartnerShare: 50 }] };
+  const result = calculatePartnership({ ...fixtures, purchases: [purchase], orders: [order], expenses: [],
+    stockLosses: [{ id: 1, productId: 1, productName: "Peach", quantity: 1, date, reason: "damaged", note: "",
+      lines: [{ purchaseId: 1, quantity: 1, unitCost: 1, firstPartnerShare: 50 }] }],
+  }, from, through);
+  assert.equal(result.firstBalance, -5);
+  assert.deepEqual(result.partners.map(partner => partner.realizedShare), [4, 4]);
+  assert.deepEqual([result.products[0].profit, result.products[0].lossCost], [8, 1]);
+});
+
+test("trend totals agree with product results including loss costs", () => {
+  const data = { ...fixtures, products: [{ id: 1, name: "Peach", stock: 1 }],
+    purchases: fixtures.purchases.map(purchase => ({ ...purchase, date, lines: [] })),
+    stockLosses: [{ id: 1, productId: 1, productName: "Peach", quantity: 1, date, reason: "lost", note: "",
+      lines: [{ purchaseId: 1, quantity: 1, unitCost: 1000, firstPartnerShare: 50 }] }],
+  };
+  const trend = performanceTrend(data, from, through);
+  assert.ok(trend.length <= 12);
+  assert.equal(trend.reduce((sum, point) => sum + point.gross, 0), 100000);
+  assert.equal(trend.reduce((sum, point) => sum + point.profit, 0), 64000);
 });

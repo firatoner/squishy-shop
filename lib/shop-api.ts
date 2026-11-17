@@ -1,7 +1,7 @@
 import { createHash, pbkdf2, randomBytes, timingSafeEqual } from "node:crypto";
 import { promisify } from "node:util";
 
-export type Rpc = <T>(group: "auth" | "write" | "read" | "cash_write" | "partnership_write" | "settings_write" | "stock_write", data: Record<string, unknown>) => Promise<T>;
+export type Rpc = <T>(group: "auth" | "write" | "read" | "cash_write" | "partnership_write" | "settings_write" | "stock_write" | "inventory_write", data: Record<string, unknown>) => Promise<T>;
 type Environment = { rpc: Rpc; setupToken?: string; secureCookies: boolean };
 type Input = Record<string, unknown>;
 type User = { id: number; name: string; username: string };
@@ -104,6 +104,14 @@ function expenseFields(input: Input) {
   };
 }
 
+function purchasePayment(input: Input) {
+  const day = date(input.date);
+  if (input.payments === undefined) return { date: day, payerId: id(input.payerId) };
+  const payments = list(input.payments, line => ({ payerId: id(line.payerId), amount: money(line.amount, "Ödenen tutar", 1) }));
+  if (payments.length > 2 || new Set(payments.map(payment => payment.payerId)).size !== payments.length) fail("Her ortak için bir ödeme tutarı girin.");
+  return { date: day, payments };
+}
+
 function mutation(action: string, input: Input) {
   switch (action) {
     case "product": {
@@ -140,11 +148,28 @@ function mutation(action: string, input: Input) {
         return { ...purchase, id: id(input.id), revision: integer(input.revision, "Kayıt sürümü", 0, 2_147_483_647) };
       }
       const payment = input.payment == null ? undefined : object(input.payment);
-      return { ...purchase,
-        payment: payment && { date: date(payment.date), payerId: id(payment.payerId) } };
+      const normalized = payment && purchasePayment(payment);
+      if (normalized?.payments && normalized.payments.reduce((sum, part) => sum + part.amount, 0) !== total) fail("Ortakların ödemeleri alım toplamıyla eşleşmeli.");
+      return { ...purchase, payment: normalized };
     }
     case "purchase-payment":
-      return { id: id(input.id), date: date(input.date), payerId: id(input.payerId) };
+    case "purchase-payment-edit":
+      return { id: id(input.id), ...purchasePayment(input) };
+    case "stock-loss": {
+      if (input.reason !== "damaged" && input.reason !== "lost") fail("Hasarlı veya kayıp seçin.");
+      return { productId: id(input.productId), quantity: quantity(input.quantity), reason: input.reason,
+        date: date(input.date), note: strings(input.note, "Not", 500, false) };
+    }
+    case "stock-loss-delete":
+      return { id: id(input.id), date: date(input.date) };
+    case "packaging-material":
+      return { id: input.id === undefined ? undefined : id(input.id),
+        revision: input.id === undefined ? undefined : integer(input.revision, "Kayıt sürümü", 0, 2_147_483_647),
+        name: strings(input.name, "Malzeme adı", 120), lowThreshold: integer(input.lowThreshold, "Düşük stok eşiği", 0, 100_000),
+        perOrder: integer(input.perOrder, "Sipariş başına kullanım", 0, 100_000) };
+    case "packaging-move":
+      if (input.direction !== "in" && input.direction !== "out") fail("Stok giriş veya çıkışını seçin.");
+      return { id: id(input.id), direction: input.direction, quantity: quantity(input.quantity), date: date(input.date), note: strings(input.note, "Not", 500, false) };
     case "order":
     case "order-edit": {
       const platform = input.platform;
@@ -294,7 +319,7 @@ type ExportState = {
 type Cell = string | number | null;
 const moneyCsv = (value: number | null) => value === null ? null : (value / 100).toFixed(2).replace(".", ",");
 const dateCsv = (value: string | null) => value === null ? null : value.split("-").reverse().join(".");
-const csvStatus: Record<string, string> = { pending: "Paketlenecek", packed: "Paketlendi", cancelled: "İptal", returned: "İade", sale: "Satış", purchase: "Alış", adjustment: "Stok düzeltmesi" };
+const csvStatus: Record<string, string> = { pending: "Paketlenecek", packed: "Paketlendi", cancelled: "İptal", returned: "İade", sale: "Satış", purchase: "Alış", adjustment: "Stok düzeltmesi", loss: "Hasar/kayıp" };
 
 function csvCell(value: Cell) {
   let cell = String(value ?? "");
@@ -398,6 +423,7 @@ export async function handleShopRequest(request: Request, action: string, env: E
         : action === "order-share" || action === "partner-transfer" || action === "partner-transfer-delete" ? "partnership_write"
         : action === "settings" ? "settings_write"
         : action === "purchase-edit" ? "stock_write"
+        : ["purchase-payment", "purchase-payment-edit", "stock-loss", "stock-loss-delete", "packaging-material", "packaging-move"].includes(action) ? "inventory_write"
         : "write";
       return json(await env.rpc(group, { p_action: action, p_actor: session.user.id, p_data }));
     }

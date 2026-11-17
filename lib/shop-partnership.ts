@@ -24,11 +24,16 @@ type Sale = {
 };
 
 export type PartnerTransfer = { id: number; senderId: number; recipientId: number; date: string; amount: number; note: string };
+export type PurchasePayment = { payerId: number; amount: number; date: string };
+export type StockLoss = { id: number; productId: number; productName: string; quantity: number; date: string; reason: string; note: string;
+  lines: { purchaseId: number; quantity: number; unitCost: number; firstPartnerShare: number | null }[] };
+type PaidPurchase = { id: number; total?: number; paymentDate: string | null; payerId: number | null; payments?: PurchasePayment[] };
 
 type PartnershipData = {
   users: { id: number }[];
   orders: Sale[];
-  purchases: { id: number; paymentDate: string | null; payerId: number | null }[];
+  purchases: PaidPurchase[];
+  stockLosses?: StockLoss[];
   expenses: { date: string; amount: number; payerId: number; firstPartnerShare: number | null }[];
   cash: { kind: string; date: string; amount: number; memberId: number }[];
   partnerTransfers: PartnerTransfer[];
@@ -73,6 +78,30 @@ function productGroups(lines: SaleLine[]) {
   });
 }
 
+function reimbursements(purchases: Map<number, PaidPurchase>, costs: Map<number, number>, through: string, cumulativeCosts: Map<number, number>) {
+  const paid = new Map<number, number>();
+  let latest = "";
+  for (const [purchaseId, cost] of costs) {
+    const purchase = purchases.get(purchaseId);
+    if (!purchase) return null;
+    const payments = purchase.payments?.length ? purchase.payments
+      : purchase.payerId !== null && purchase.paymentDate !== null ? [{ payerId: purchase.payerId, date: purchase.paymentDate, amount: purchase.total ?? 1 }] : [];
+    const total = payments.reduce((sum, payment) => sum + payment.amount, 0);
+    if (!total || (purchase.total !== undefined && total !== purchase.total) || payments.some(payment => payment.date > through)) return null;
+    const previous = cumulativeCosts.get(purchaseId) ?? 0;
+    const weights = payments.map(payment => payment.amount);
+    const before = allocate(previous, weights);
+    const after = allocate(previous + cost, weights);
+    const portions = after.map((amount, index) => amount - before[index]);
+    payments.forEach((payment, index) => {
+      paid.set(payment.payerId, (paid.get(payment.payerId) ?? 0) + portions[index]);
+      if (payment.date > latest) latest = payment.date;
+    });
+  }
+  for (const [purchaseId, cost] of costs) cumulativeCosts.set(purchaseId, (cumulativeCosts.get(purchaseId) ?? 0) + cost);
+  return { paid, latest };
+}
+
 export function calculatePartnership(data: PartnershipData, from: string, through: string) {
   const [first, second] = [...data.users].sort((a, b) => a.id - b.id);
   const inPeriod = (day: string) => day >= from && day <= through;
@@ -87,7 +116,8 @@ export function calculatePartnership(data: PartnershipData, from: string, throug
     };
   });
   const purchaseById = new Map(data.purchases.map(purchase => [purchase.id, purchase]));
-  const products = new Map<number, { productId: number; name: string; quantity: number; gross: number; profit: number; firstProfit: number; secondProfit: number; unassigned: number }>();
+  const cumulativeCosts = new Map<number, number>();
+  const products = new Map<number, { productId: number; name: string; quantity: number; gross: number; profit: number; lossCost: number; firstProfit: number; secondProfit: number; unassigned: number }>();
   const missingShares = new Set<number>();
   const awaitingStockPayments = new Set<number>();
   let excludedReceipts = 0;
@@ -111,7 +141,7 @@ export function calculatePartnership(data: PartnershipData, from: string, throug
         : groups.reduce((sum, group) => sum + group.gross, 0) - order.netAfterShipping;
       const fees = allocate(deductions + order.packing, weights);
       groups.forEach((group, i) => {
-        const product = products.get(group.productId) ?? { productId: group.productId, name: group.productName, quantity: 0, gross: 0, profit: 0, firstProfit: 0, secondProfit: 0, unassigned: 0 };
+        const product = products.get(group.productId) ?? { productId: group.productId, name: group.productName, quantity: 0, gross: 0, profit: 0, lossCost: 0, firstProfit: 0, secondProfit: 0, unassigned: 0 };
         const profit = group.gross - fees[i] - group.cost;
         product.quantity += group.quantity;
         product.gross += group.gross;
@@ -127,25 +157,19 @@ export function calculatePartnership(data: PartnershipData, from: string, throug
     }
 
     if (!collected || missing) continue;
-    let eligibleDate = order.receiptDate!;
-    const paidStock = new Map<number, number>();
-    let unpaid = false;
+    const costs = new Map<number, number>();
     for (const line of order.lines) {
       if (line.unitCost === 0) continue;
-      const purchase = purchaseById.get(line.purchaseId);
-      if (purchase?.payerId == null || purchase.paymentDate === null || purchase.paymentDate > through) {
-        unpaid = true;
-        break;
-      }
-      eligibleDate = purchase.paymentDate > eligibleDate ? purchase.paymentDate : eligibleDate;
-      paidStock.set(purchase.payerId, (paidStock.get(purchase.payerId) ?? 0) + line.unitCost * line.quantity);
+      costs.set(line.purchaseId, (costs.get(line.purchaseId) ?? 0) + line.unitCost * line.quantity);
     }
-    if (unpaid) {
+    const stockPayments = reimbursements(purchaseById, costs, through, cumulativeCosts);
+    if (!stockPayments) {
       awaitingStockPayments.add(order.id);
       continue;
     }
+    const eligibleDate = stockPayments.latest > order.receiptDate! ? stockPayments.latest : order.receiptDate!;
     const receipts = allocate(order.receiptAmount!, weights);
-    firstBalance += (paidStock.get(first.id) ?? 0) - (order.recipientId === first.id ? order.receiptAmount! : 0);
+    firstBalance += (stockPayments.paid.get(first.id) ?? 0) - (order.recipientId === first.id ? order.receiptAmount! : 0);
     groups.forEach((group, i) => {
       const profit = receipts[i] - group.cost;
       const firstShare = roundedRatio(profit, group.share!, 100);
@@ -155,6 +179,36 @@ export function calculatePartnership(data: PartnershipData, from: string, throug
         partners[1].realizedShare += profit - firstShare;
       }
     });
+  }
+
+  let awaitingLossPayments = 0;
+  for (const loss of data.stockLosses ?? []) {
+    if (loss.date > through) continue;
+    const costs = new Map<number, number>();
+    let lossCost = 0;
+    let firstLoss = 0;
+    for (const line of loss.lines) {
+      const cost = line.quantity * line.unitCost;
+      lossCost += cost;
+      firstLoss += roundedRatio(cost, line.firstPartnerShare ?? 0, 100);
+      if (cost) costs.set(line.purchaseId, (costs.get(line.purchaseId) ?? 0) + cost);
+    }
+    const product = products.get(loss.productId) ?? { productId: loss.productId, name: loss.productName, quantity: 0, gross: 0, profit: 0, lossCost: 0, firstProfit: 0, secondProfit: 0, unassigned: 0 };
+    if (inPeriod(loss.date)) {
+      product.profit -= lossCost;
+      product.lossCost += lossCost;
+      product.firstProfit -= firstLoss;
+      product.secondProfit -= lossCost - firstLoss;
+      products.set(loss.productId, product);
+    }
+    const payments = reimbursements(purchaseById, costs, through, cumulativeCosts);
+    if (!payments) { awaitingLossPayments += 1; continue; }
+    firstBalance += (payments.paid.get(first.id) ?? 0) - firstLoss;
+    const eligibleDate = payments.latest > loss.date ? payments.latest : loss.date;
+    if (inPeriod(eligibleDate)) {
+      partners[0].realizedShare -= firstLoss;
+      partners[1].realizedShare -= lossCost - firstLoss;
+    }
   }
 
   let unassignedExpenses = 0;
@@ -174,5 +228,5 @@ export function calculatePartnership(data: PartnershipData, from: string, throug
   for (const transfer of data.partnerTransfers ?? []) {
     if (transfer.date <= through) firstBalance += transfer.senderId === first.id ? transfer.amount : -transfer.amount;
   }
-  return { partners, products: [...products.values()], firstBalance, missingShares, awaitingStockPayments, excludedReceipts, unassignedExpenses };
+  return { partners, products: [...products.values()], firstBalance, missingShares, awaitingStockPayments, awaitingLossPayments, excludedReceipts, unassignedExpenses };
 }
